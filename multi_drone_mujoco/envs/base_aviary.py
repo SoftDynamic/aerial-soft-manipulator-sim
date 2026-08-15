@@ -98,6 +98,14 @@ DRONE_PARAMS = {
 }
 
 
+CF2X_3G_PAYLOAD_PARAMS = {
+    "mass": 0.003,          # kg
+    "position": (0.0, 0.0, -0.020),
+    "radius": 0.010,        # m
+    "half_height": 0.005,   # m (MuJoCo cylinder size convention)
+}
+
+
 def _generate_aviary_xml(
     num_drones: int,
     drone_model: DroneModel,
@@ -106,6 +114,7 @@ def _generate_aviary_xml(
     obstacles: bool = False,
     vision: bool = False,
     timestep: float = 1 / 240,
+    enable_3g_payload: bool = False,
 ) -> str:
     """Generate MuJoCo XML for the aviary with N drones."""
     meshdir = str(CF2_MESH_DIR)
@@ -186,6 +195,22 @@ def _generate_aviary_xml(
       <geom mesh="cf2_vis_6" material="white" class="visual"/>
       <site name="{prefix}_center" pos="0 0 0" group="5"/>
 {prop_sites}"""
+
+        if enable_3g_payload:
+            payload_mass = CF2X_3G_PAYLOAD_PARAMS["mass"]
+            payload_x, payload_y, payload_z = CF2X_3G_PAYLOAD_PARAMS["position"]
+            payload_radius = CF2X_3G_PAYLOAD_PARAMS["radius"]
+            payload_half_height = CF2X_3G_PAYLOAD_PARAMS["half_height"]
+            payload_full_height = 2 * payload_half_height
+            payload_ixx = payload_mass * (
+                3 * payload_radius ** 2 + payload_full_height ** 2
+            ) / 12
+            payload_izz = 0.5 * payload_mass * payload_radius ** 2
+            drone_bodies += f"""      <body name="{prefix}_payload" pos="{payload_x} {payload_y} {payload_z}">
+        <inertial pos="0 0 0" mass="{payload_mass}" diaginertia="{payload_ixx} {payload_ixx} {payload_izz}"/>
+        <geom name="{prefix}_payload_geom" type="cylinder" size="{payload_radius} {payload_half_height}" rgba="0.8 0.2 0.2 1" contype="1" conaffinity="1"/>
+      </body>
+"""
 
         # Add camera for vision
         if vision:
@@ -299,6 +324,7 @@ class BaseAviary(gym.Env):
         act_type: ActionType = ActionType.RPM,
         output_folder: str = "results",
         render_mode: Optional[str] = None,
+        enable_3g_payload: bool = False,
     ):
         """Initialize the aviary.
 
@@ -336,8 +362,21 @@ class BaseAviary(gym.Env):
             Directory for recordings and logs.
         render_mode : str
             Gymnasium render mode ("human" or "rgb_array").
+        enable_3g_payload : bool
+            Attach the single-CF2X 3 g rigid payload benchmark model. This is
+            currently restricted to Physics.MJC with direct RPM actions.
         """
         super().__init__()
+
+        if enable_3g_payload:
+            if drone_model != DroneModel.CF2X:
+                raise ValueError("The 3 g rigid payload is only supported for DroneModel.CF2X")
+            if num_drones != 1:
+                raise ValueError("The 3 g rigid payload benchmark requires num_drones == 1")
+            if physics != Physics.MJC:
+                raise ValueError("The 3 g rigid payload is only supported with Physics.MJC")
+            if act_type != ActionType.RPM:
+                raise ValueError("The 3 g rigid payload is only supported with ActionType.RPM")
 
         # Constants
         self.G = 9.81
@@ -366,10 +405,13 @@ class BaseAviary(gym.Env):
         self.ACT_TYPE = act_type
         self.OUTPUT_FOLDER = output_folder
         self.render_mode = render_mode if render_mode else ("human" if gui else None)
+        self.ENABLE_3G_PAYLOAD = enable_3g_payload
 
         # Load drone parameters
         params = DRONE_PARAMS[drone_model]
-        self.M = params["mass"]
+        self.DRONE_MASS = params["mass"]
+        self.PAYLOAD_MASS = CF2X_3G_PAYLOAD_PARAMS["mass"] if enable_3g_payload else 0.0
+        self.M = self.DRONE_MASS + self.PAYLOAD_MASS
         self.L = params["arm_length"]
         self.THRUST2WEIGHT_RATIO = params["thrust2weight_ratio"]
         self.J = np.diag([params["ixx"], params["iyy"], params["izz"]])
@@ -390,7 +432,8 @@ class BaseAviary(gym.Env):
         # Derived constants
         self.GRAVITY = self.G * self.M
         self.HOVER_RPM = np.sqrt(self.GRAVITY / (4 * self.KF))
-        self.MAX_RPM = np.sqrt((self.THRUST2WEIGHT_RATIO * self.GRAVITY) / (4 * self.KF))
+        nominal_weight = self.G * self.DRONE_MASS
+        self.MAX_RPM = np.sqrt((self.THRUST2WEIGHT_RATIO * nominal_weight) / (4 * self.KF))
         self.MAX_THRUST = 4 * self.KF * self.MAX_RPM ** 2
         if drone_model in (DroneModel.CF2X, DroneModel.RACE):
             self.MAX_XY_TORQUE = (2 * self.L * self.KF * self.MAX_RPM ** 2) / np.sqrt(2)
@@ -425,6 +468,7 @@ class BaseAviary(gym.Env):
             obstacles=obstacles,
             vision=vision_attributes,
             timestep=self.SIM_TIMESTEP,
+            enable_3g_payload=enable_3g_payload,
         )
         self.model = mujoco.MjModel.from_xml_string(xml_str)
         self.data = mujoco.MjData(self.model)
