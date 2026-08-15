@@ -16,6 +16,7 @@ import mujoco.viewer
 import numpy as np
 from gymnasium import spaces
 
+from multi_drone_mujoco.models.components.passive_arm import PassiveArmSpec
 from multi_drone_mujoco.models.mjcf_builder import build_aviary_xml
 from multi_drone_mujoco.models.parameters import (
     CF2X_3G_PAYLOAD_PARAMS,
@@ -60,6 +61,7 @@ class BaseAviary(gym.Env):
         output_folder: str = "results",
         render_mode: Optional[str] = None,
         enable_3g_payload: bool = False,
+        passive_arm: Optional[PassiveArmSpec] = None,
     ):
         """Initialize the aviary.
 
@@ -100,6 +102,9 @@ class BaseAviary(gym.Env):
         enable_3g_payload : bool
             Attach the single-CF2X 3 g rigid payload benchmark model. This is
             currently restricted to Physics.MJC with direct RPM actions.
+        passive_arm : PassiveArmSpec, optional
+            Attach a single-link passive arm to one CF2X using MuJoCo physics
+            with direct RPM actions.
         """
         super().__init__()
 
@@ -112,6 +117,18 @@ class BaseAviary(gym.Env):
                 raise ValueError("The 3 g rigid payload is only supported with Physics.MJC")
             if act_type != ActionType.RPM:
                 raise ValueError("The 3 g rigid payload is only supported with ActionType.RPM")
+
+        if passive_arm is not None:
+            if enable_3g_payload:
+                raise ValueError("The passive arm cannot be combined with the 3 g rigid payload")
+            if drone_model != DroneModel.CF2X:
+                raise ValueError("The passive arm is only supported for DroneModel.CF2X")
+            if num_drones != 1:
+                raise ValueError("The passive arm requires num_drones == 1")
+            if physics != Physics.MJC:
+                raise ValueError("The passive arm is only supported with Physics.MJC")
+            if act_type != ActionType.RPM:
+                raise ValueError("The passive arm is only supported with ActionType.RPM")
 
         # Constants
         self.G = 9.81
@@ -141,12 +158,14 @@ class BaseAviary(gym.Env):
         self.OUTPUT_FOLDER = output_folder
         self.render_mode = render_mode if render_mode else ("human" if gui else None)
         self.ENABLE_3G_PAYLOAD = enable_3g_payload
+        self.PASSIVE_ARM_SPEC = passive_arm
 
         # Load drone parameters
         params = DRONE_PARAMS[drone_model]
         self.DRONE_MASS = params["mass"]
         self.PAYLOAD_MASS = CF2X_3G_PAYLOAD_PARAMS["mass"] if enable_3g_payload else 0.0
-        self.M = self.DRONE_MASS + self.PAYLOAD_MASS
+        self.ARM_MASS = passive_arm.mass if passive_arm is not None else 0.0
+        self.M = self.DRONE_MASS + self.PAYLOAD_MASS + self.ARM_MASS
         self.L = params["arm_length"]
         self.THRUST2WEIGHT_RATIO = params["thrust2weight_ratio"]
         self.J = np.diag([params["ixx"], params["iyy"], params["izz"]])
@@ -181,10 +200,16 @@ class BaseAviary(gym.Env):
 
         # Initial positions/orientations
         if initial_xyzs is None:
+            arm_length = passive_arm.length if passive_arm is not None else 0.0
             self.INIT_XYZS = np.vstack([
                 np.array([x * 4 * self.L for x in range(num_drones)]),
                 np.array([y * 4 * self.L for y in range(num_drones)]),
-                np.ones(num_drones) * (self.COLLISION_H / 2 - self.COLLISION_Z_OFFSET + 0.1)
+                np.ones(num_drones) * (
+                    self.COLLISION_H / 2
+                    - self.COLLISION_Z_OFFSET
+                    + 0.1
+                    + arm_length
+                )
             ]).T.reshape(num_drones, 3)
         else:
             self.INIT_XYZS = np.array(initial_xyzs).reshape(num_drones, 3)
@@ -204,6 +229,7 @@ class BaseAviary(gym.Env):
             vision=vision_attributes,
             timestep=self.SIM_TIMESTEP,
             enable_3g_payload=enable_3g_payload,
+            passive_arm=passive_arm,
         )
         self.model = mujoco.MjModel.from_xml_string(self._generated_xml)
         self.data = mujoco.MjData(self.model)

@@ -2,9 +2,14 @@
 
 import os
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 
+from multi_drone_mujoco.models.components.passive_arm import (
+    PassiveArmSpec,
+    build_passive_arm_xml,
+)
 from multi_drone_mujoco.models.parameters import (
     CF2X_3G_PAYLOAD_PARAMS,
     DRONE_PARAMS,
@@ -30,8 +35,17 @@ def build_aviary_xml(
     vision: bool = False,
     timestep: float = 1 / 240,
     enable_3g_payload: bool = False,
+    passive_arm: Optional[PassiveArmSpec] = None,
 ) -> str:
     """Generate MuJoCo XML for the aviary with N drones."""
+    if passive_arm is not None:
+        if drone_model != DroneModel.CF2X:
+            raise ValueError("The passive arm is only supported for DroneModel.CF2X")
+        if num_drones != 1:
+            raise ValueError("The passive arm requires num_drones == 1")
+        if enable_3g_payload:
+            raise ValueError("The passive arm cannot be combined with the 3 g rigid payload")
+
     meshdir = str(CF2_MESH_DIR)
     params = DRONE_PARAMS[drone_model]
 
@@ -126,6 +140,10 @@ def build_aviary_xml(
         <geom name="{prefix}_payload_geom" type="cylinder" size="{payload_radius} {payload_half_height}" rgba="0.8 0.2 0.2 1" contype="1" conaffinity="1"/>
       </body>
 """
+
+        if passive_arm is not None:
+            mount_z = params["collision_z_offset"] - params["collision_h"] / 2
+            drone_bodies += build_passive_arm_xml(prefix, passive_arm, mount_z)
 
         # Add camera for vision
         if vision:
