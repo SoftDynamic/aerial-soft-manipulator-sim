@@ -1,0 +1,204 @@
+"""MJCF construction for drone aviary models."""
+
+import os
+from pathlib import Path
+
+import numpy as np
+
+from multi_drone_mujoco.models.parameters import (
+    CF2X_3G_PAYLOAD_PARAMS,
+    DRONE_PARAMS,
+)
+from multi_drone_mujoco.utils.enums import DroneModel
+
+
+# CF2 mesh files (.obj) are vendored under multi_drone_mujoco/assets/cf2.
+# They were copied from google-deepmind/mujoco_menagerie (bitcraze_crazyflie_2)
+# so users no longer need to clone the whole menagerie repo. To use a different
+# checkout, set the MJ_DRONES_CF2_ASSETS env var to its assets dir.
+ASSETS_PATH = Path(__file__).resolve().parent.parent / "assets"
+CF2_MESH_DIR = Path(os.environ.get("MJ_DRONES_CF2_ASSETS",
+                                   str(ASSETS_PATH / "cf2")))
+
+
+def build_aviary_xml(
+    num_drones: int,
+    drone_model: DroneModel,
+    init_xyzs: np.ndarray,
+    init_rpys: np.ndarray,
+    obstacles: bool = False,
+    vision: bool = False,
+    timestep: float = 1 / 240,
+    enable_3g_payload: bool = False,
+) -> str:
+    """Generate MuJoCo XML for the aviary with N drones."""
+    meshdir = str(CF2_MESH_DIR)
+    params = DRONE_PARAMS[drone_model]
+
+    # Visual and collision meshes
+    visual_meshes = "\n".join(
+        f'    <mesh file="{meshdir}/cf2_{i}.obj" name="cf2_vis_{i}"/>'
+        for i in range(7)
+    )
+    collision_meshes = "\n".join(
+        f'    <mesh file="{meshdir}/cf2_collision_{i}.obj" name="cf2_col_{i}"/>'
+        for i in range(32)
+    )
+
+    # Drone bodies with 4 propeller sites for force application
+    mass = params["mass"]
+    ixx, iyy, izz = params["ixx"], params["iyy"], params["izz"]
+    L = params["arm_length"]
+
+    drone_bodies = ""
+    actuators = ""
+    sensors = ""
+
+    for d in range(num_drones):
+        x, y, z = init_xyzs[d]
+        # Convert RPY to quaternion for initial orientation
+        r, p_angle, yaw = init_rpys[d]
+        # Simple RPY to quat (small angles)
+        cr, sr = np.cos(r / 2), np.sin(r / 2)
+        cp, sp = np.cos(p_angle / 2), np.sin(p_angle / 2)
+        cy, sy = np.cos(yaw / 2), np.sin(yaw / 2)
+        qw = cr * cp * cy + sr * sp * sy
+        qx = sr * cp * cy - cr * sp * sy
+        qy = cr * sp * cy + sr * cp * sy
+        qz = cr * cp * sy - sr * sp * cy
+
+        prefix = f"drone{d}"
+
+        # Propeller positions (X-configuration for CF2X)
+        if drone_model == DroneModel.CF2X:
+            prop_offsets = [
+                (L / np.sqrt(2), L / np.sqrt(2), 0),    # front-left
+                (-L / np.sqrt(2), L / np.sqrt(2), 0),   # front-right (corrected)
+                (-L / np.sqrt(2), -L / np.sqrt(2), 0),  # rear-right
+                (L / np.sqrt(2), -L / np.sqrt(2), 0),   # rear-left
+            ]
+        elif drone_model == DroneModel.CF2P:
+            prop_offsets = [
+                (L, 0, 0),     # front
+                (0, L, 0),     # left
+                (-L, 0, 0),    # rear
+                (0, -L, 0),    # right
+            ]
+        else:  # RACE (same as X)
+            prop_offsets = [
+                (L / np.sqrt(2), L / np.sqrt(2), 0),
+                (-L / np.sqrt(2), L / np.sqrt(2), 0),
+                (-L / np.sqrt(2), -L / np.sqrt(2), 0),
+                (L / np.sqrt(2), -L / np.sqrt(2), 0),
+            ]
+
+        prop_sites = ""
+        for pi, (px, py, pz) in enumerate(prop_offsets):
+            prop_sites += f'      <site name="{prefix}_prop{pi}" pos="{px} {py} {pz}" group="5"/>\n'
+
+        drone_bodies += f"""
+    <body name="{prefix}" pos="{x} {y} {z}" quat="{qw} {qx} {qy} {qz}">
+      <freejoint name="{prefix}_joint"/>
+      <inertial pos="0 0 0" mass="{mass}" diaginertia="{ixx} {iyy} {izz}"/>
+      <geom name="{prefix}_collision" type="cylinder" size="{params['collision_r']} {params['collision_h'] / 2}" rgba="0 0 0 0" contype="1" conaffinity="1"/>
+      <geom mesh="cf2_vis_0" material="propeller_plastic" class="visual"/>
+      <geom mesh="cf2_vis_1" material="medium_gloss_plastic" class="visual"/>
+      <geom mesh="cf2_vis_2" material="polished_gold" class="visual"/>
+      <geom mesh="cf2_vis_3" material="polished_plastic" class="visual"/>
+      <geom mesh="cf2_vis_4" material="burnished_chrome" class="visual"/>
+      <geom mesh="cf2_vis_5" material="body_frame_plastic" class="visual"/>
+      <geom mesh="cf2_vis_6" material="white" class="visual"/>
+      <site name="{prefix}_center" pos="0 0 0" group="5"/>
+{prop_sites}"""
+
+        if enable_3g_payload:
+            payload_mass = CF2X_3G_PAYLOAD_PARAMS["mass"]
+            payload_x, payload_y, payload_z = CF2X_3G_PAYLOAD_PARAMS["position"]
+            payload_radius = CF2X_3G_PAYLOAD_PARAMS["radius"]
+            payload_half_height = CF2X_3G_PAYLOAD_PARAMS["half_height"]
+            payload_full_height = 2 * payload_half_height
+            payload_ixx = payload_mass * (
+                3 * payload_radius ** 2 + payload_full_height ** 2
+            ) / 12
+            payload_izz = 0.5 * payload_mass * payload_radius ** 2
+            drone_bodies += f"""      <body name="{prefix}_payload" pos="{payload_x} {payload_y} {payload_z}">
+        <inertial pos="0 0 0" mass="{payload_mass}" diaginertia="{payload_ixx} {payload_ixx} {payload_izz}"/>
+        <geom name="{prefix}_payload_geom" type="cylinder" size="{payload_radius} {payload_half_height}" rgba="0.8 0.2 0.2 1" contype="1" conaffinity="1"/>
+      </body>
+"""
+
+        # Add camera for vision
+        if vision:
+            drone_bodies += f'      <camera name="{prefix}_cam" pos="0.02 0 0" xyaxes="0 -1 0 0 0 1" fovy="60"/>\n'
+
+        drone_bodies += "    </body>\n"
+
+        # Sensors
+        sensors += f"""
+    <gyro name="{prefix}_gyro" site="{prefix}_center"/>
+    <accelerometer name="{prefix}_acc" site="{prefix}_center"/>
+    <framequat name="{prefix}_quat" objtype="site" objname="{prefix}_center"/>
+    <framepos name="{prefix}_pos" objtype="site" objname="{prefix}_center"/>
+    <framelinvel name="{prefix}_vel" objtype="site" objname="{prefix}_center"/>
+    <frameangvel name="{prefix}_angvel" objtype="site" objname="{prefix}_center"/>"""
+
+    # Obstacles
+    obstacle_bodies = ""
+    if obstacles:
+        obstacle_bodies = """
+    <body name="obstacle_box" pos="0.5 0.5 0.3">
+      <geom type="box" size="0.1 0.1 0.3" rgba="0.8 0.2 0.2 1"/>
+    </body>
+    <body name="obstacle_sphere" pos="-0.5 0.5 0.5">
+      <geom type="sphere" size="0.1" rgba="0.2 0.8 0.2 1"/>
+    </body>
+    <body name="obstacle_cylinder" pos="0 -0.5 0.4">
+      <geom type="cylinder" size="0.05 0.3" rgba="0.2 0.2 0.8 1"/>
+    </body>"""
+
+    xml = f"""<mujoco model="aviary_{num_drones}x_{drone_model.value}">
+  <option integrator="RK4" density="1.225" viscosity="1.8e-5" timestep="{timestep}"/>
+  <compiler inertiafromgeom="false" autolimits="true"/>
+
+  <default>
+    <default class="cf2">
+      <default class="visual">
+        <geom group="2" type="mesh" contype="0" conaffinity="0"/>
+      </default>
+    </default>
+  </default>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="-20" elevation="-20"/>
+    <quality shadowsize="2048"/>
+  </visual>
+
+  <asset>
+    <material name="polished_plastic" rgba="0.631 0.659 0.678 1"/>
+    <material name="polished_gold" rgba="0.969 0.878 0.6 1"/>
+    <material name="medium_gloss_plastic" rgba="0.109 0.184 0.0 1"/>
+    <material name="propeller_plastic" rgba="0.792 0.820 0.933 1"/>
+    <material name="white" rgba="1 1 1 1"/>
+    <material name="body_frame_plastic" rgba="0.102 0.102 0.102 1"/>
+    <material name="burnished_chrome" rgba="0.898 0.898 0.898 1"/>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
+{visual_meshes}
+{collision_meshes}
+  </asset>
+
+  <worldbody>
+    <light pos="0 0 3" dir="0 0 -1" directional="true" castshadow="false"/>
+    <geom name="floor" size="10 10 0.05" type="plane" material="groundplane" contype="1" conaffinity="1"/>
+{drone_bodies}{obstacle_bodies}
+  </worldbody>
+
+  <sensor>
+{sensors}
+  </sensor>
+</mujoco>
+"""
+    return xml
