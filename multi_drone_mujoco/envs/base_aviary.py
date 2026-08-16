@@ -103,8 +103,8 @@ class BaseAviary(gym.Env):
             Attach the single-CF2X 3 g rigid payload benchmark model. This is
             currently restricted to Physics.MJC with direct RPM actions.
         passive_arm : PassiveArmSpec, optional
-            Attach a single-link passive arm to one CF2X using MuJoCo physics
-            with direct RPM actions.
+            Attach a multi-segment two-direction passive flexible arm to one
+            CF2X using MuJoCo physics with direct RPM actions.
         """
         super().__init__()
 
@@ -164,7 +164,9 @@ class BaseAviary(gym.Env):
         params = DRONE_PARAMS[drone_model]
         self.DRONE_MASS = params["mass"]
         self.PAYLOAD_MASS = CF2X_3G_PAYLOAD_PARAMS["mass"] if enable_3g_payload else 0.0
-        self.ARM_MASS = passive_arm.mass if passive_arm is not None else 0.0
+        self.ARM_MASS = (
+            passive_arm.total_mass if passive_arm is not None else 0.0
+        )
         self.M = self.DRONE_MASS + self.PAYLOAD_MASS + self.ARM_MASS
         self.L = params["arm_length"]
         self.THRUST2WEIGHT_RATIO = params["thrust2weight_ratio"]
@@ -200,7 +202,9 @@ class BaseAviary(gym.Env):
 
         # Initial positions/orientations
         if initial_xyzs is None:
-            arm_length = passive_arm.length if passive_arm is not None else 0.0
+            arm_length = (
+                passive_arm.total_length if passive_arm is not None else 0.0
+            )
             self.INIT_XYZS = np.vstack([
                 np.array([x * 4 * self.L for x in range(num_drones)]),
                 np.array([y * 4 * self.L for y in range(num_drones)]),
