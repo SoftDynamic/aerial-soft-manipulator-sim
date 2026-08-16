@@ -17,6 +17,9 @@ import numpy as np
 from gymnasium import spaces
 
 from multi_drone_mujoco.models.components.passive_arm import PassiveArmSpec
+from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
+    ScaledStableSoftArmSpec,
+)
 from multi_drone_mujoco.models.mjcf_builder import build_aviary_xml
 from multi_drone_mujoco.models.parameters import (
     CF2X_3G_PAYLOAD_PARAMS,
@@ -62,6 +65,7 @@ class BaseAviary(gym.Env):
         render_mode: Optional[str] = None,
         enable_3g_payload: bool = False,
         passive_arm: Optional[PassiveArmSpec] = None,
+        scaled_stablesoft_arm: Optional[ScaledStableSoftArmSpec] = None,
     ):
         """Initialize the aviary.
 
@@ -105,8 +109,16 @@ class BaseAviary(gym.Env):
         passive_arm : PassiveArmSpec, optional
             Attach a multi-segment two-direction passive flexible arm to one
             CF2X using MuJoCo physics with direct RPM actions.
+        scaled_stablesoft_arm : ScaledStableSoftArmSpec, optional
+            Attach the nine-segment scaled StableSoft passive topology and
+            four spatial tendon routes to one CF2X.
         """
         super().__init__()
+
+        if passive_arm is not None and scaled_stablesoft_arm is not None:
+            raise ValueError(
+                "The scaled StableSoft arm cannot be combined with the passive arm"
+            )
 
         if enable_3g_payload:
             if drone_model != DroneModel.CF2X:
@@ -129,6 +141,28 @@ class BaseAviary(gym.Env):
                 raise ValueError("The passive arm is only supported with Physics.MJC")
             if act_type != ActionType.RPM:
                 raise ValueError("The passive arm is only supported with ActionType.RPM")
+
+        if scaled_stablesoft_arm is not None:
+            if enable_3g_payload:
+                raise ValueError(
+                    "The scaled StableSoft arm cannot be combined with the 3 g rigid payload"
+                )
+            if drone_model != DroneModel.CF2X:
+                raise ValueError(
+                    "The scaled StableSoft arm is only supported for DroneModel.CF2X"
+                )
+            if num_drones != 1:
+                raise ValueError(
+                    "The scaled StableSoft arm requires num_drones == 1"
+                )
+            if physics != Physics.MJC:
+                raise ValueError(
+                    "The scaled StableSoft arm is only supported with Physics.MJC"
+                )
+            if act_type != ActionType.RPM:
+                raise ValueError(
+                    "The scaled StableSoft arm is only supported with ActionType.RPM"
+                )
 
         # Constants
         self.G = 9.81
@@ -159,14 +193,18 @@ class BaseAviary(gym.Env):
         self.render_mode = render_mode if render_mode else ("human" if gui else None)
         self.ENABLE_3G_PAYLOAD = enable_3g_payload
         self.PASSIVE_ARM_SPEC = passive_arm
+        self.SCALED_STABLESOFT_ARM_SPEC = scaled_stablesoft_arm
 
         # Load drone parameters
         params = DRONE_PARAMS[drone_model]
         self.DRONE_MASS = params["mass"]
         self.PAYLOAD_MASS = CF2X_3G_PAYLOAD_PARAMS["mass"] if enable_3g_payload else 0.0
-        self.ARM_MASS = (
-            passive_arm.total_mass if passive_arm is not None else 0.0
-        )
+        if passive_arm is not None:
+            self.ARM_MASS = passive_arm.total_mass
+        elif scaled_stablesoft_arm is not None:
+            self.ARM_MASS = scaled_stablesoft_arm.total_mass
+        else:
+            self.ARM_MASS = 0.0
         self.M = self.DRONE_MASS + self.PAYLOAD_MASS + self.ARM_MASS
         self.L = params["arm_length"]
         self.THRUST2WEIGHT_RATIO = params["thrust2weight_ratio"]
@@ -202,9 +240,12 @@ class BaseAviary(gym.Env):
 
         # Initial positions/orientations
         if initial_xyzs is None:
-            arm_length = (
-                passive_arm.total_length if passive_arm is not None else 0.0
-            )
+            if passive_arm is not None:
+                arm_length = passive_arm.total_length
+            elif scaled_stablesoft_arm is not None:
+                arm_length = scaled_stablesoft_arm.total_length
+            else:
+                arm_length = 0.0
             self.INIT_XYZS = np.vstack([
                 np.array([x * 4 * self.L for x in range(num_drones)]),
                 np.array([y * 4 * self.L for y in range(num_drones)]),
@@ -234,6 +275,7 @@ class BaseAviary(gym.Env):
             timestep=self.SIM_TIMESTEP,
             enable_3g_payload=enable_3g_payload,
             passive_arm=passive_arm,
+            scaled_stablesoft_arm=scaled_stablesoft_arm,
         )
         self.model = mujoco.MjModel.from_xml_string(self._generated_xml)
         self.data = mujoco.MjData(self.model)

@@ -10,6 +10,10 @@ from multi_drone_mujoco.models.components.passive_arm import (
     PassiveArmSpec,
     build_passive_arm_xml,
 )
+from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
+    ScaledStableSoftArmSpec,
+    build_scaled_stablesoft_arm_mjcf,
+)
 from multi_drone_mujoco.models.parameters import (
     CF2X_3G_PAYLOAD_PARAMS,
     DRONE_PARAMS,
@@ -36,8 +40,13 @@ def build_aviary_xml(
     timestep: float = 1 / 240,
     enable_3g_payload: bool = False,
     passive_arm: Optional[PassiveArmSpec] = None,
+    scaled_stablesoft_arm: Optional[ScaledStableSoftArmSpec] = None,
 ) -> str:
     """Generate MuJoCo XML for the aviary with N drones."""
+    if passive_arm is not None and scaled_stablesoft_arm is not None:
+        raise ValueError(
+            "The scaled StableSoft arm cannot be combined with the passive arm"
+        )
     if passive_arm is not None:
         if drone_model != DroneModel.CF2X:
             raise ValueError("The passive arm is only supported for DroneModel.CF2X")
@@ -45,6 +54,19 @@ def build_aviary_xml(
             raise ValueError("The passive arm requires num_drones == 1")
         if enable_3g_payload:
             raise ValueError("The passive arm cannot be combined with the 3 g rigid payload")
+    if scaled_stablesoft_arm is not None:
+        if drone_model != DroneModel.CF2X:
+            raise ValueError(
+                "The scaled StableSoft arm is only supported for DroneModel.CF2X"
+            )
+        if num_drones != 1:
+            raise ValueError(
+                "The scaled StableSoft arm requires num_drones == 1"
+            )
+        if enable_3g_payload:
+            raise ValueError(
+                "The scaled StableSoft arm cannot be combined with the 3 g rigid payload"
+            )
 
     meshdir = str(CF2_MESH_DIR)
     params = DRONE_PARAMS[drone_model]
@@ -67,6 +89,7 @@ def build_aviary_xml(
     drone_bodies = ""
     actuators = ""
     sensors = ""
+    tendons = ""
 
     for d in range(num_drones):
         x, y, z = init_xyzs[d]
@@ -145,6 +168,18 @@ def build_aviary_xml(
             mount_z = params["collision_z_offset"] - params["collision_h"] / 2
             drone_bodies += build_passive_arm_xml(prefix, passive_arm, mount_z)
 
+        if scaled_stablesoft_arm is not None:
+            mount_z = params["collision_z_offset"] - params["collision_h"] / 2
+            arm_fragments = build_scaled_stablesoft_arm_mjcf(
+                prefix,
+                scaled_stablesoft_arm,
+                mount_z,
+            )
+            drone_bodies += arm_fragments.worldbody_xml
+            tendons += arm_fragments.tendon_xml
+            actuators += arm_fragments.actuator_xml
+            sensors += "\n" + arm_fragments.sensor_xml
+
         # Add camera for vision
         if vision:
             drone_bodies += f'      <camera name="{prefix}_cam" pos="0.02 0 0" xyaxes="0 -1 0 0 0 1" fovy="60"/>\n'
@@ -173,6 +208,22 @@ def build_aviary_xml(
     <body name="obstacle_cylinder" pos="0 -0.5 0.4">
       <geom type="cylinder" size="0.05 0.3" rgba="0.2 0.2 0.8 1"/>
     </body>"""
+
+    tendon_section = ""
+    if tendons:
+        tendon_section = f"""
+  <tendon>
+{tendons}
+  </tendon>
+"""
+
+    actuator_section = ""
+    if actuators:
+        actuator_section = f"""
+  <actuator>
+{actuators}
+  </actuator>
+"""
 
     xml = f"""<mujoco model="aviary_{num_drones}x_{drone_model.value}">
   <option integrator="RK4" density="1.225" viscosity="1.8e-5" timestep="{timestep}"/>
@@ -213,6 +264,7 @@ def build_aviary_xml(
     <geom name="floor" size="10 10 0.05" type="plane" material="groundplane" contype="1" conaffinity="1"/>
 {drone_bodies}{obstacle_bodies}
   </worldbody>
+{tendon_section}{actuator_section}
 
   <sensor>
 {sensors}
