@@ -38,6 +38,9 @@ def _spec(**overrides):
         "body_radius": BODY_RADIUS,
         "tendon_range": None,
         "tendon_frictionloss": 0.0,
+        "joint_stiffness": 0.0,
+        "joint_damping": 0.0,
+        "target_damping_ratio": None,
     }
     kwargs.update(overrides)
     return ScaledStableSoftArmSpec(**kwargs)
@@ -118,6 +121,32 @@ def _tendon_id(model, name):
     return _name_id(model, mujoco.mjtObj.mjOBJ_TENDON, name)
 
 
+def _without_mount_visuals(xml, manifest):
+    root = ET.fromstring(xml)
+    drone_body = root.find(".//body[@name='drone0']")
+    assert drone_body is not None
+    adapter = drone_body.find(
+        f"geom[@name='{manifest.arm_mount_adapter_geom_name}']"
+    )
+    mount_site = drone_body.find(
+        f"site[@name='{manifest.arm_mount_site_name}']"
+    )
+    root_body = drone_body.find(
+        f"body[@name='{manifest.segment_body_names[0]}']"
+    )
+    assert adapter is not None
+    assert mount_site is not None
+    assert root_body is not None
+    root_site = root_body.find(
+        f"site[@name='{manifest.arm_root_site_name}']"
+    )
+    assert root_site is not None
+    drone_body.remove(adapter)
+    drone_body.remove(mount_site)
+    root_body.remove(root_site)
+    return ET.tostring(root, encoding="unicode")
+
+
 @pytest.mark.parametrize(
     "field,value,match",
     [
@@ -184,6 +213,131 @@ def test_scaled_stablesoft_spec_normalizes_numeric_inputs_to_floats():
     assert type(spec.tendon_frictionloss) is float
     assert isinstance(spec.tendon_range, tuple)
     assert all(type(endpoint) is float for endpoint in spec.tendon_range)
+
+
+def test_scaled_stablesoft_passive_parameters_preserve_gate_a_defaults():
+    spec = ScaledStableSoftArmSpec()
+
+    assert spec.joint_stiffness == 0.0
+    assert spec.joint_damping == 0.0
+    assert spec.target_damping_ratio is None
+    assert spec.resolved_joint_stiffness == (0.0,) * 8
+    assert spec.resolved_joint_damping == (0.0,) * 8
+
+
+@pytest.mark.parametrize(
+    "field,value,match",
+    [
+        ("joint_stiffness", True, "joint_stiffness.*not bool"),
+        ("joint_stiffness", -1.0, "joint_stiffness must be non-negative"),
+        ("joint_stiffness", np.nan, "joint_stiffness must be finite"),
+        ("joint_stiffness", np.inf, "joint_stiffness must be finite"),
+        ("joint_stiffness", 1 + 2j, "joint_stiffness must be"),
+        ("joint_stiffness", [0.0] * 7, "sequence must have length 8"),
+        ("joint_stiffness", [0.0] * 7 + [-1.0], "values must be non-negative"),
+        ("joint_damping", False, "joint_damping.*not bool"),
+        ("joint_damping", -1.0, "joint_damping must be non-negative"),
+        ("joint_damping", np.nan, "joint_damping must be finite"),
+        ("joint_damping", np.inf, "joint_damping must be finite"),
+        ("joint_damping", 1 + 2j, "joint_damping must be a real number"),
+        ("joint_damping", [0.0] * 9, "sequence must have length 8"),
+        ("joint_damping", [0.0] * 7 + [np.inf], r"joint_damping\[7\].*finite"),
+        ("target_damping_ratio", True, "target_damping_ratio.*not bool"),
+        ("target_damping_ratio", -0.1, "target_damping_ratio must be non-negative"),
+        ("target_damping_ratio", np.nan, "target_damping_ratio must be finite"),
+        ("target_damping_ratio", np.inf, "target_damping_ratio must be finite"),
+        (
+            "target_damping_ratio",
+            1 + 2j,
+            "target_damping_ratio must be a real number",
+        ),
+    ],
+)
+def test_scaled_stablesoft_spec_rejects_invalid_passive_parameters(
+    field, value, match
+):
+    kwargs = _spec().__dict__.copy()
+    kwargs[field] = value
+    if field == "target_damping_ratio":
+        kwargs["joint_damping"] = None
+    with pytest.raises(ValueError, match=match):
+        ScaledStableSoftArmSpec(**kwargs)
+
+
+def test_scaled_stablesoft_spec_rejects_ambiguous_damping_modes():
+    with pytest.raises(ValueError, match="cannot both be set"):
+        _spec(joint_damping=0.0, target_damping_ratio=0.3)
+
+
+def test_scaled_stablesoft_spec_resolves_unspecified_damping_to_zero():
+    spec = _spec(joint_damping=None, target_damping_ratio=None)
+
+    assert spec.joint_damping is None
+    assert spec.resolved_joint_damping == (0.0,) * 8
+
+
+def test_scaled_stablesoft_spec_copies_and_normalizes_joint_sequences():
+    stiffness = [0.001 * (index + 1) for index in range(8)]
+    damping = np.arange(8, dtype=float) * 1e-6
+    spec = _spec(
+        joint_stiffness=stiffness,
+        joint_damping=damping,
+    )
+    expected_stiffness = tuple(stiffness)
+    expected_damping = tuple(float(value) for value in damping)
+
+    stiffness[:] = [0.0] * 8
+    damping[:] = 1.0
+
+    assert spec.joint_stiffness == expected_stiffness
+    assert spec.joint_damping == expected_damping
+    assert spec.resolved_joint_stiffness == expected_stiffness
+    assert spec.resolved_joint_damping == expected_damping
+    assert all(type(value) is float for value in spec.joint_stiffness)
+    assert all(type(value) is float for value in spec.joint_damping)
+
+
+def test_scaled_stablesoft_derives_b1_damping_from_downstream_inertia():
+    stiffness = [0.003086] * 8
+    spec = _spec(
+        joint_stiffness=stiffness,
+        joint_damping=None,
+        target_damping_ratio=0.3,
+    )
+    expected_damping = tuple(
+        2 * 0.3 * math.sqrt(k * inertia)
+        for k, inertia in zip(stiffness, spec.bending_effective_inertias)
+    )
+
+    assert spec.resolved_joint_damping == pytest.approx(expected_damping)
+    assert spec.resolved_joint_damping == pytest.approx(
+        (
+            7.071313274573578e-05,
+            5.788962718019289e-05,
+            4.595333125392906e-05,
+            3.497608602784423e-05,
+            2.5050809424837078e-05,
+            1.6304549262910235e-05,
+            8.927077439170014e-06,
+            3.2536908197641157e-06,
+        ),
+        rel=1e-12,
+    )
+
+
+def test_scaled_stablesoft_rejects_derived_damping_underflow_and_overflow():
+    with pytest.raises(ValueError, match="damping product.*underflowed"):
+        _spec(
+            joint_stiffness=np.nextafter(0.0, 1.0),
+            joint_damping=None,
+            target_damping_ratio=0.3,
+        )
+    with pytest.raises(ValueError, match="derived joint damping.*finite"):
+        _spec(
+            joint_stiffness=1.0,
+            joint_damping=None,
+            target_damping_ratio=np.finfo(float).max,
+        )
 
 
 def test_scaled_stablesoft_spec_copies_mutable_tendon_range_input():
@@ -316,6 +470,42 @@ def test_builder_rejects_unsupported_scaled_stablesoft_combinations(
 
 
 @pytest.mark.parametrize(
+    "integrator,match",
+    [
+        (None, "must be a string"),
+        (False, "must be a string"),
+        ("", "must not be empty"),
+        ("Euler", "must be one of"),
+        ("rk4", "must be one of"),
+    ],
+)
+def test_builder_rejects_invalid_integrator(integrator, match):
+    with pytest.raises(ValueError, match=match):
+        _build_xml(integrator=integrator)
+
+
+@pytest.mark.parametrize(
+    "integrator,expected",
+    [
+        ("RK4", mujoco.mjtIntegrator.mjINT_RK4),
+        ("implicitfast", mujoco.mjtIntegrator.mjINT_IMPLICITFAST),
+    ],
+)
+def test_builder_compiles_explicit_integrator(integrator, expected):
+    xml = _build_xml(integrator=integrator)
+    model = mujoco.MjModel.from_xml_string(xml)
+
+    assert f'integrator="{integrator}"' in xml
+    assert model.opt.integrator == expected
+
+
+def test_builder_default_integrator_remains_rk4():
+    model = mujoco.MjModel.from_xml_string(_build_xml())
+
+    assert model.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4
+
+
+@pytest.mark.parametrize(
     "overrides,match",
     [
         (
@@ -364,6 +554,13 @@ def test_scaled_stablesoft_fragments_have_stable_manifest_and_empty_actuator():
     assert manifest.segment_body_names[0].endswith("segment_00")
     assert manifest.segment_body_names[-1].endswith("segment_08")
     assert manifest.ball_joint_names[0].endswith("segment_01_ball_joint")
+    assert manifest.arm_mount_adapter_geom_name == (
+        "drone0_arm_mount_adapter_geom"
+    )
+    assert manifest.arm_mount_site_name == "drone0_arm_mount_site"
+    assert manifest.arm_root_site_name == (
+        "drone0_scaled_stablesoft_arm_root_site"
+    )
     assert manifest.arm_tip_site_name == (
         "drone0_scaled_stablesoft_arm_tip_site"
     )
@@ -380,8 +577,8 @@ def test_scaled_stablesoft_xml_compiles_with_expected_counts():
     assert model.njnt == 9
     assert model.nq == 39
     assert model.nv == 30
-    assert model.ngeom == 18
-    assert model.nsite == 78
+    assert model.ngeom == 19
+    assert model.nsite == 80
     assert model.ntendon == 4
     assert model.nu == 0
     assert model.nsensor == 10
@@ -399,6 +596,34 @@ def test_scaled_stablesoft_named_body_joint_geometry_and_tip():
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)
     drone_id = _body_id(model, "drone0")
+
+    xml_root = ET.fromstring(_build_xml(spec))
+    adapter_element = xml_root.find(
+        ".//body[@name='drone0']/geom"
+        f"[@name='{fragments.manifest.arm_mount_adapter_geom_name}']"
+    )
+    assert adapter_element is not None
+    assert adapter_element.attrib["fromto"] == "0 0 0 0 0 -0.014999999999999999"
+    assert float(adapter_element.attrib["size"]) == pytest.approx(
+        spec.body_radius
+    )
+    assert adapter_element.attrib["contype"] == "0"
+    assert adapter_element.attrib["conaffinity"] == "0"
+
+    adapter_id = _geom_id(
+        model, fragments.manifest.arm_mount_adapter_geom_name
+    )
+    assert int(model.geom_bodyid[adapter_id]) == drone_id
+    assert model.geom_type[adapter_id] == mujoco.mjtGeom.mjGEOM_CYLINDER
+    assert int(model.geom_contype[adapter_id]) == 0
+    assert int(model.geom_conaffinity[adapter_id]) == 0
+
+    mount_site_id = _site_id(model, fragments.manifest.arm_mount_site_name)
+    root_site_id = _site_id(model, fragments.manifest.arm_root_site_name)
+    assert int(model.site_bodyid[mount_site_id]) == drone_id
+    np.testing.assert_allclose(
+        model.site_pos[mount_site_id], [0.0, 0.0, MOUNT_Z], atol=1e-12
+    )
 
     for segment_index, body_name in enumerate(
         fragments.manifest.segment_body_names
@@ -457,6 +682,16 @@ def test_scaled_stablesoft_named_body_joint_geometry_and_tip():
         model.site_pos[tip_id], [0.0, 0.0, -spec.segment_pitch], atol=1e-12
     )
     root_body_id = _body_id(model, fragments.manifest.segment_body_names[0])
+    assert int(model.site_bodyid[root_site_id]) == root_body_id
+    np.testing.assert_allclose(
+        model.site_pos[root_site_id], [0.0, 0.0, 0.0], atol=1e-12
+    )
+    np.testing.assert_allclose(
+        data.site_xpos[mount_site_id],
+        data.site_xpos[root_site_id],
+        rtol=0.0,
+        atol=1e-12,
+    )
     assert np.linalg.norm(
         data.site_xpos[tip_id] - data.xpos[root_body_id]
     ) == pytest.approx(spec.total_length, abs=1e-12)
@@ -468,6 +703,25 @@ def test_scaled_stablesoft_named_body_joint_geometry_and_tip():
             data.xpos[body_id],
             [0.0, 0.0, 1.0 + MOUNT_Z - segment_index * spec.segment_pitch],
             atol=1e-12,
+        )
+
+
+def test_scaled_stablesoft_compiles_per_joint_stiffness_and_damping():
+    stiffness = tuple(0.001 * (index + 1) for index in range(8))
+    damping = tuple(1e-6 * (index + 1) for index in range(8))
+    spec = _spec(joint_stiffness=stiffness, joint_damping=damping)
+    fragments = build_scaled_stablesoft_arm_mjcf("drone0", spec, MOUNT_Z)
+    model = mujoco.MjModel.from_xml_string(_build_xml(spec))
+
+    for index, joint_name in enumerate(fragments.manifest.ball_joint_names):
+        joint_id = _joint_id(model, joint_name)
+        dof_address = int(model.jnt_dofadr[joint_id])
+        assert model.jnt_stiffness[joint_id] == pytest.approx(stiffness[index])
+        np.testing.assert_allclose(
+            model.dof_damping[dof_address:dof_address + 3],
+            damping[index],
+            rtol=1e-12,
+            atol=0.0,
         )
 
 
@@ -500,6 +754,70 @@ def test_scaled_stablesoft_mass_and_cylinder_inertia():
     )
     drone_id = _body_id(model, "drone0")
     assert model.body_subtreemass[drone_id] == pytest.approx(0.030, abs=1e-12)
+
+
+def test_mount_visuals_preserve_mass_inertia_com_length_and_tendons():
+    spec = _spec()
+    fragments = build_scaled_stablesoft_arm_mjcf("drone0", spec, MOUNT_Z)
+    with_visuals = mujoco.MjModel.from_xml_string(_build_xml(spec))
+    without_visuals = mujoco.MjModel.from_xml_string(
+        _without_mount_visuals(_build_xml(spec), fragments.manifest)
+    )
+    with_data = mujoco.MjData(with_visuals)
+    without_data = mujoco.MjData(without_visuals)
+    mujoco.mj_forward(with_visuals, with_data)
+    mujoco.mj_forward(without_visuals, without_data)
+
+    np.testing.assert_allclose(
+        with_visuals.body_mass,
+        without_visuals.body_mass,
+        rtol=1e-12,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        with_visuals.body_subtreemass,
+        without_visuals.body_subtreemass,
+        rtol=1e-12,
+        atol=1e-12,
+    )
+    np.testing.assert_allclose(
+        with_visuals.body_inertia,
+        without_visuals.body_inertia,
+        rtol=1e-12,
+        atol=1e-15,
+    )
+
+    with_drone_id = _body_id(with_visuals, "drone0")
+    without_drone_id = _body_id(without_visuals, "drone0")
+    np.testing.assert_allclose(
+        with_data.subtree_com[with_drone_id],
+        without_data.subtree_com[without_drone_id],
+        rtol=0.0,
+        atol=1e-12,
+    )
+
+    with_root_id = _site_id(with_visuals, fragments.manifest.arm_root_site_name)
+    with_tip_id = _site_id(with_visuals, fragments.manifest.arm_tip_site_name)
+    without_root_body_id = _body_id(
+        without_visuals, fragments.manifest.segment_body_names[0]
+    )
+    without_tip_id = _site_id(
+        without_visuals, fragments.manifest.arm_tip_site_name
+    )
+    assert np.linalg.norm(
+        with_data.site_xpos[with_tip_id] - with_data.site_xpos[with_root_id]
+    ) == pytest.approx(spec.total_length, abs=1e-12)
+    assert np.linalg.norm(
+        without_data.site_xpos[without_tip_id]
+        - without_data.xpos[without_root_body_id]
+    ) == pytest.approx(spec.total_length, abs=1e-12)
+
+    np.testing.assert_allclose(
+        with_data.ten_length,
+        without_data.ten_length,
+        rtol=1e-10,
+        atol=1e-12,
+    )
 
 
 def test_scaled_stablesoft_routing_sites_match_scaled_contract():

@@ -2,8 +2,8 @@
 
 import math
 from dataclasses import dataclass
-from numbers import Real
-from typing import Optional, Tuple
+from numbers import Complex, Real
+from typing import Optional, Tuple, Union
 
 
 _STABLESOFT_REFERENCE_LENGTH = 9 * 0.096
@@ -14,6 +14,8 @@ _CORNER_SIGNS = (
     ("xn_yp", -1.0, 1.0),
     ("xn_yn", -1.0, -1.0),
 )
+
+_JointParameter = Union[float, Tuple[float, ...]]
 
 
 def solid_cylinder_diagonal_inertia(
@@ -29,9 +31,13 @@ def solid_cylinder_diagonal_inertia(
 
 def _normalized_finite_float(name: str, value: float) -> float:
     """Return a finite float while rejecting booleans and non-real values."""
-    if isinstance(value, bool) or not isinstance(value, Real):
+    if isinstance(value, bool):
         raise ValueError(
             f"Scaled StableSoft arm {name} must be a real number, not bool"
+        )
+    if not isinstance(value, Real):
+        raise ValueError(
+            f"Scaled StableSoft arm {name} must be a real number"
         )
     try:
         normalized = float(value)
@@ -46,6 +52,56 @@ def _normalized_finite_float(name: str, value: float) -> float:
     return normalized
 
 
+def _normalized_nonnegative_joint_parameter(
+    name: str,
+    value,
+    num_joints: int,
+) -> _JointParameter:
+    """Normalize a non-negative scalar or per-joint sequence."""
+    if isinstance(value, bool):
+        raise ValueError(
+            f"Scaled StableSoft arm {name} must be a non-negative real "
+            "scalar or sequence, not bool"
+        )
+    if isinstance(value, Real):
+        normalized = _normalized_finite_float(name, value)
+        if normalized < 0:
+            raise ValueError(
+                f"Scaled StableSoft arm {name} must be non-negative"
+            )
+        return normalized
+    if isinstance(value, Complex):
+        raise ValueError(
+            f"Scaled StableSoft arm {name} must be a real number"
+        )
+    if isinstance(value, (str, bytes)):
+        raise ValueError(
+            f"Scaled StableSoft arm {name} must be a non-negative real "
+            f"scalar or sequence of length {num_joints}"
+        )
+    try:
+        raw_values = tuple(value)
+    except TypeError as exc:
+        raise ValueError(
+            f"Scaled StableSoft arm {name} must be a non-negative real "
+            f"scalar or sequence of length {num_joints}"
+        ) from exc
+    if len(raw_values) != num_joints:
+        raise ValueError(
+            f"Scaled StableSoft arm {name} sequence must have length "
+            f"{num_joints}"
+        )
+    normalized_values = tuple(
+        _normalized_finite_float(f"{name}[{index}]", item)
+        for index, item in enumerate(raw_values)
+    )
+    if any(item < 0 for item in normalized_values):
+        raise ValueError(
+            f"Scaled StableSoft arm {name} values must be non-negative"
+        )
+    return normalized_values
+
+
 @dataclass(frozen=True)
 class ScaledStableSoftArmSpec:
     """Core parameters for the nine-segment scaled StableSoft surrogate."""
@@ -56,6 +112,9 @@ class ScaledStableSoftArmSpec:
     body_radius: float = 0.003
     tendon_range: Optional[Tuple[float, float]] = None
     tendon_frictionloss: float = 0.0
+    joint_stiffness: _JointParameter = 0.0
+    joint_damping: Optional[_JointParameter] = 0.0
+    target_damping_ratio: Optional[float] = None
 
     def __post_init__(self):
         if isinstance(self.num_segments, bool) or not isinstance(
@@ -67,6 +126,47 @@ class ScaledStableSoftArmSpec:
         if self.num_segments != 9:
             raise ValueError(
                 "Scaled StableSoft arm num_segments must equal 9"
+            )
+
+        object.__setattr__(
+            self,
+            "joint_stiffness",
+            _normalized_nonnegative_joint_parameter(
+                "joint_stiffness",
+                self.joint_stiffness,
+                self.num_ball_joints,
+            ),
+        )
+        if self.joint_damping is not None:
+            object.__setattr__(
+                self,
+                "joint_damping",
+                _normalized_nonnegative_joint_parameter(
+                    "joint_damping",
+                    self.joint_damping,
+                    self.num_ball_joints,
+                ),
+            )
+        if self.target_damping_ratio is not None:
+            object.__setattr__(
+                self,
+                "target_damping_ratio",
+                _normalized_finite_float(
+                    "target_damping_ratio", self.target_damping_ratio
+                ),
+            )
+            if self.target_damping_ratio < 0:
+                raise ValueError(
+                    "Scaled StableSoft arm target_damping_ratio must be "
+                    "non-negative"
+                )
+        if (
+            self.joint_damping is not None
+            and self.target_damping_ratio is not None
+        ):
+            raise ValueError(
+                "Scaled StableSoft arm joint_damping and "
+                "target_damping_ratio cannot both be set"
             )
 
         for field_name in (
@@ -139,6 +239,8 @@ class ScaledStableSoftArmSpec:
                 self.body_radius,
                 self.segment_pitch,
             )
+            effective_inertias = self.bending_effective_inertias
+            resolved_damping = self.resolved_joint_damping
         except OverflowError as exc:
             raise ValueError(
                 "Scaled StableSoft arm derived quantities overflowed "
@@ -178,6 +280,22 @@ class ScaledStableSoftArmSpec:
             raise ValueError(
                 "Scaled StableSoft arm solid-cylinder inertia must be positive"
             )
+        if not all(
+            math.isfinite(value) and value > 0
+            for value in effective_inertias
+        ):
+            raise ValueError(
+                "Scaled StableSoft arm derived bending effective inertia "
+                "must be finite and positive"
+            )
+        if not all(
+            math.isfinite(value) and value >= 0
+            for value in resolved_damping
+        ):
+            raise ValueError(
+                "Scaled StableSoft arm derived joint damping must be finite "
+                "and non-negative"
+            )
         try:
             triangle_is_strict = all(
                 inertia[axis]
@@ -201,6 +319,90 @@ class ScaledStableSoftArmSpec:
     @property
     def num_ball_joints(self) -> int:
         return self.num_segments - 1
+
+    @staticmethod
+    def _expanded_joint_parameter(
+        value: _JointParameter,
+        num_joints: int,
+    ) -> Tuple[float, ...]:
+        if isinstance(value, tuple):
+            return value
+        return (float(value),) * num_joints
+
+    @property
+    def resolved_joint_stiffness(self) -> Tuple[float, ...]:
+        """Return one isotropic stiffness for each ball joint."""
+        return self._expanded_joint_parameter(
+            self.joint_stiffness,
+            self.num_ball_joints,
+        )
+
+    @property
+    def bending_effective_inertias(self) -> Tuple[float, ...]:
+        """Return downstream bending inertia about each ball joint."""
+        transverse, _, _ = solid_cylinder_diagonal_inertia(
+            self.segment_mass,
+            self.body_radius,
+            self.segment_pitch,
+        )
+        values = []
+        for joint_index in range(self.num_ball_joints):
+            downstream_count = self.num_ball_joints - joint_index
+            effective_inertia = math.fsum(
+                transverse
+                + self.segment_mass
+                * ((segment_offset + 0.5) * self.segment_pitch) ** 2
+                for segment_offset in range(downstream_count)
+            )
+            values.append(effective_inertia)
+        return tuple(values)
+
+    @property
+    def resolved_joint_damping(self) -> Tuple[float, ...]:
+        """Return explicit or target-ratio-derived damping per ball joint."""
+        if self.joint_damping is not None:
+            return self._expanded_joint_parameter(
+                self.joint_damping,
+                self.num_ball_joints,
+            )
+        if self.target_damping_ratio is None:
+            return (0.0,) * self.num_ball_joints
+
+        damping_values = []
+        for joint_index, (stiffness, effective_inertia) in enumerate(
+            zip(
+                self.resolved_joint_stiffness,
+                self.bending_effective_inertias,
+            )
+        ):
+            product = stiffness * effective_inertia
+            if not math.isfinite(product):
+                raise ValueError(
+                    "Scaled StableSoft arm derived damping product for "
+                    f"joint {joint_index} must be finite"
+                )
+            if stiffness > 0 and effective_inertia > 0 and product <= 0:
+                raise ValueError(
+                    "Scaled StableSoft arm derived damping product for "
+                    f"joint {joint_index} underflowed"
+                )
+            damping = 2 * self.target_damping_ratio * math.sqrt(product)
+            if not math.isfinite(damping):
+                raise ValueError(
+                    "Scaled StableSoft arm derived joint damping for joint "
+                    f"{joint_index} must be finite"
+                )
+            if (
+                self.target_damping_ratio > 0
+                and stiffness > 0
+                and damping <= 0
+            ):
+                raise ValueError(
+                    "Scaled StableSoft arm derived joint damping for joint "
+                    f"{joint_index} underflowed"
+                )
+            damping_values.append(damping)
+        return tuple(damping_values)
 
     @property
     def length_scale(self) -> float:
@@ -279,6 +481,9 @@ class ArmMjcfManifest:
     tendon_names: Tuple[str, ...]
     tendon_sensor_names: Tuple[str, ...]
     tendon_site_routes: Tuple[Tuple[str, ...], ...]
+    arm_mount_adapter_geom_name: str
+    arm_mount_site_name: str
+    arm_root_site_name: str
     arm_tip_site_name: str
 
 
@@ -326,6 +531,9 @@ def build_scaled_stablesoft_arm_mjcf(
         for segment_index in range(1, spec.num_segments)
     )
     tip_site_name = f"{drone_prefix}_scaled_stablesoft_arm_tip_site"
+    adapter_geom_name = f"{drone_prefix}_arm_mount_adapter_geom"
+    mount_site_name = f"{drone_prefix}_arm_mount_site"
+    root_site_name = f"{drone_prefix}_scaled_stablesoft_arm_root_site"
 
     route_names = []
     tendon_names = []
@@ -353,15 +561,20 @@ def build_scaled_stablesoft_arm_mjcf(
         spec.segment_pitch,
     )
     half_pitch = spec.segment_pitch / 2
+    joint_stiffness = spec.resolved_joint_stiffness
+    joint_damping = spec.resolved_joint_damping
     child_xml = ""
     for segment_index in reversed(range(spec.num_segments)):
         body_name = segment_names[segment_index]
         body_z = mount_z if segment_index == 0 else -spec.segment_pitch
         joint_xml = ""
         if segment_index > 0:
+            joint_parameter_index = segment_index - 1
             joint_xml = (
                 f'        <joint name="{body_name}_ball_joint" type="ball" '
-                'stiffness="0" damping="0" frictionloss="0" armature="0"/>'
+                f'stiffness="{_float_text(joint_stiffness[joint_parameter_index])}" '
+                f'damping="{_float_text(joint_damping[joint_parameter_index])}" '
+                'frictionloss="0" armature="0"/>'
                 "\n"
             )
 
@@ -383,6 +596,13 @@ def build_scaled_stablesoft_arm_mjcf(
                 )
         sites_xml = "\n".join(site_lines) + "\n"
 
+        root_site_xml = ""
+        if segment_index == 0:
+            root_site_xml = (
+                f'        <site name="{root_site_name}" pos="0 0 0" '
+                'group="5"/>\n'
+            )
+
         tip_xml = ""
         if segment_index == spec.num_segments - 1:
             tip_xml = (
@@ -393,8 +613,19 @@ def build_scaled_stablesoft_arm_mjcf(
         child_xml = f'''      <body name="{body_name}" pos="0 0 {_float_text(body_z)}">
 {joint_xml}        <inertial pos="0 0 {_float_text(-half_pitch)}" mass="{_float_text(spec.segment_mass)}" diaginertia="{_float_text(transverse)} {_float_text(transverse)} {_float_text(axial)}"/>
         <geom name="{body_name}_geom" type="cylinder" pos="0 0 {_float_text(-half_pitch)}" size="{_float_text(spec.body_radius)} {_float_text(half_pitch)}" rgba="0.2 0.4 0.9 1" contype="0" conaffinity="0"/>
-{sites_xml}{tip_xml}{child_xml}      </body>
+{root_site_xml}{sites_xml}{tip_xml}{child_xml}      </body>
 '''
+
+    # Display-only surrogate: this fills the visual gap to the fixed B0 root,
+    # and is not intended to represent measured mounting hardware.
+    parent_visual_xml = (
+        f'      <geom name="{adapter_geom_name}" type="cylinder" '
+        f'fromto="0 0 0 0 0 {_float_text(mount_z)}" '
+        f'size="{_float_text(spec.body_radius)}" '
+        'rgba="0.25 0.25 0.25 1" contype="0" conaffinity="0"/>\n'
+        f'      <site name="{mount_site_name}" pos="0 0 '
+        f'{_float_text(mount_z)}" group="5"/>\n'
+    )
 
     tendon_lower, tendon_upper = spec.effective_tendon_range
     tendon_lines = []
@@ -425,10 +656,13 @@ def build_scaled_stablesoft_arm_mjcf(
         tendon_names=tuple(tendon_names),
         tendon_sensor_names=tuple(sensor_names),
         tendon_site_routes=tuple(route_names),
+        arm_mount_adapter_geom_name=adapter_geom_name,
+        arm_mount_site_name=mount_site_name,
+        arm_root_site_name=root_site_name,
         arm_tip_site_name=tip_site_name,
     )
     return ArmMjcfFragments(
-        worldbody_xml=child_xml,
+        worldbody_xml=parent_visual_xml + child_xml,
         tendon_xml="\n".join(tendon_lines),
         actuator_xml="",
         sensor_xml="\n".join(sensor_lines),

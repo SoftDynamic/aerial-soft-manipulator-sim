@@ -38,11 +38,20 @@ def build_aviary_xml(
     obstacles: bool = False,
     vision: bool = False,
     timestep: float = 1 / 240,
+    integrator: str = "RK4",
     enable_3g_payload: bool = False,
     passive_arm: Optional[PassiveArmSpec] = None,
     scaled_stablesoft_arm: Optional[ScaledStableSoftArmSpec] = None,
 ) -> str:
     """Generate MuJoCo XML for the aviary with N drones."""
+    if not isinstance(integrator, str):
+        raise ValueError("integrator must be a string")
+    if not integrator:
+        raise ValueError("integrator must not be empty")
+    if integrator not in ("RK4", "implicitfast"):
+        raise ValueError(
+            "integrator must be one of: RK4, implicitfast"
+        )
     if passive_arm is not None and scaled_stablesoft_arm is not None:
         raise ValueError(
             "The scaled StableSoft arm cannot be combined with the passive arm"
@@ -226,7 +235,7 @@ def build_aviary_xml(
 """
 
     xml = f"""<mujoco model="aviary_{num_drones}x_{drone_model.value}">
-  <option integrator="RK4" density="1.225" viscosity="1.8e-5" timestep="{timestep}"/>
+  <option integrator="{integrator}" density="1.225" viscosity="1.8e-5" timestep="{timestep}"/>
   <compiler inertiafromgeom="false" autolimits="true"/>
 
   <default>
