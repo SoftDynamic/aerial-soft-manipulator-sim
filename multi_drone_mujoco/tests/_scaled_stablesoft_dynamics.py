@@ -711,22 +711,24 @@ def analyze_decay_signal(
 
     crossing_times = []
     crossing_directions = []
-    for index in range(len(signal) - 1):
-        left = signal[index]
-        right = signal[index + 1]
-        if left == 0.0:
-            fraction = 0.0
-        elif left * right < 0.0:
+    nonzero_indices = np.flatnonzero(signal != 0.0)
+    for left_index, right_index in zip(
+        nonzero_indices[:-1],
+        nonzero_indices[1:],
+    ):
+        left = signal[left_index]
+        right = signal[right_index]
+        if left * right >= 0.0:
+            continue
+        if right_index == left_index + 1:
             fraction = -left / (right - left)
+            crossing_time = sample_time[left_index] + fraction * (
+                sample_time[right_index] - sample_time[left_index]
+            )
         else:
-            continue
-        crossing_time = sample_time[index] + fraction * (
-            sample_time[index + 1] - sample_time[index]
-        )
-        if crossing_times and math.isclose(
-            crossing_time, crossing_times[-1], rel_tol=0.0, abs_tol=1e-15
-        ):
-            continue
+            zero_start_time = sample_time[left_index + 1]
+            zero_end_time = sample_time[right_index - 1]
+            crossing_time = 0.5 * (zero_start_time + zero_end_time)
         crossing_times.append(float(crossing_time))
         crossing_directions.append(1 if right > left else -1)
     crossing_times_array = np.asarray(crossing_times, dtype=float)

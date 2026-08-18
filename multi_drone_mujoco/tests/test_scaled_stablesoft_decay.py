@@ -437,6 +437,61 @@ def test_decay_analysis_uses_settling_fallback_when_peaks_are_insufficient():
     assert settling <= time[-1] - 0.25
 
 
+def test_decay_analysis_collapses_sign_changing_zero_plateau():
+    time = np.arange(5, dtype=float) / CTRL_FREQ
+    analysis = analyze_decay_signal(time, [1.0, 0.0, 0.0, 0.0, -1.0])
+
+    np.testing.assert_allclose(
+        analysis.zero_crossing_times,
+        [0.5 * (time[1] + time[3])],
+    )
+    np.testing.assert_array_equal(analysis.zero_crossing_directions, [-1])
+
+
+def test_decay_analysis_ignores_same_sign_zero_plateau():
+    time = np.arange(4, dtype=float) / CTRL_FREQ
+    analysis = analyze_decay_signal(time, [1.0, 0.0, 0.0, 1.0])
+
+    assert len(analysis.zero_crossing_times) == 0
+    assert analysis.zero_crossing_frequency is None
+
+
+def test_decay_analysis_ignores_trailing_zero_plateau():
+    time = np.arange(5, dtype=float) / CTRL_FREQ
+    analysis = analyze_decay_signal(time, [1.0, 0.5, 0.0, 0.0, 0.0])
+
+    assert len(analysis.zero_crossing_times) == 0
+    assert analysis.zero_crossing_frequency is None
+
+
+def test_decay_analysis_all_zero_signal_has_no_frequency():
+    time = np.arange(5, dtype=float) / CTRL_FREQ
+    analysis = analyze_decay_signal(time, np.zeros_like(time))
+
+    assert len(analysis.zero_crossing_times) == 0
+    assert analysis.zero_crossing_frequency is None
+    assert analysis.frequency is None
+
+
+def test_decay_analysis_preserves_adjacent_linear_zero_interpolation():
+    time = np.array([0.0, 0.1, 0.2])
+    analysis = analyze_decay_signal(time, [1.0, -3.0, -2.0])
+
+    np.testing.assert_allclose(analysis.zero_crossing_times, [0.025])
+    np.testing.assert_array_equal(analysis.zero_crossing_directions, [-1])
+
+
+def test_decay_analysis_zero_plateau_periodic_signal_is_not_240_hz():
+    signal = np.array(
+        [1.0, 0.0, 0.0, -1.0, 0.0, 0.0] * 3 + [1.0]
+    )
+    time = np.arange(len(signal), dtype=float) / CTRL_FREQ
+    analysis = analyze_decay_signal(time, signal)
+
+    assert analysis.zero_crossing_frequency == pytest.approx(40.0)
+    assert analysis.zero_crossing_frequency != pytest.approx(CTRL_FREQ)
+
+
 def test_energy_analysis_distinguishes_spikes_and_sustained_growth():
     spring_energy = 7.715e-6
     tolerance = max(1e-9, 0.01 * spring_energy)
