@@ -66,6 +66,7 @@ class BaseAviary(gym.Env):
         enable_3g_payload: bool = False,
         passive_arm: Optional[PassiveArmSpec] = None,
         scaled_stablesoft_arm: Optional[ScaledStableSoftArmSpec] = None,
+        integrator: str = "RK4",
     ):
         """Initialize the aviary.
 
@@ -112,6 +113,8 @@ class BaseAviary(gym.Env):
         scaled_stablesoft_arm : ScaledStableSoftArmSpec, optional
             Attach the nine-segment scaled StableSoft passive topology and
             four spatial tendon routes to one CF2X.
+        integrator : str
+            MuJoCo integrator name passed unchanged to the MJCF builder.
         """
         super().__init__()
 
@@ -194,6 +197,7 @@ class BaseAviary(gym.Env):
         self.ENABLE_3G_PAYLOAD = enable_3g_payload
         self.PASSIVE_ARM_SPEC = passive_arm
         self.SCALED_STABLESOFT_ARM_SPEC = scaled_stablesoft_arm
+        self.INTEGRATOR = integrator
 
         # Load drone parameters
         params = DRONE_PARAMS[drone_model]
@@ -273,6 +277,7 @@ class BaseAviary(gym.Env):
             obstacles=obstacles,
             vision=vision_attributes,
             timestep=self.SIM_TIMESTEP,
+            integrator=self.INTEGRATOR,
             enable_3g_payload=enable_3g_payload,
             passive_arm=passive_arm,
             scaled_stablesoft_arm=scaled_stablesoft_arm,

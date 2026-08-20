@@ -505,6 +505,40 @@ def test_builder_default_integrator_remains_rk4():
     assert model.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4
 
 
+def test_environment_default_integrator_remains_rk4():
+    env = _make_env()
+    try:
+        assert env.INTEGRATOR == "RK4"
+        assert env.model.opt.integrator == mujoco.mjtIntegrator.mjINT_RK4
+        assert env.model.opt.timestep == pytest.approx(1.0 / 240)
+    finally:
+        env.close()
+
+
+def test_environment_passes_explicit_integrator_and_timestep_to_builder():
+    env = _make_env(
+        sim_freq=2400,
+        ctrl_freq=240,
+        integrator="implicitfast",
+    )
+    try:
+        assert env.INTEGRATOR == "implicitfast"
+        assert (
+            env.model.opt.integrator
+            == mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+        )
+        assert env.model.opt.timestep == pytest.approx(1.0 / 2400)
+        assert env.model.nu == 0
+        assert env.model.ntendon == 4
+    finally:
+        env.close()
+
+
+def test_environment_leaves_integrator_validation_to_builder():
+    with pytest.raises(ValueError, match="integrator must be one of"):
+        _make_env(integrator="Euler")
+
+
 @pytest.mark.parametrize(
     "overrides,match",
     [
@@ -572,6 +606,8 @@ def test_scaled_stablesoft_fragments_have_stable_manifest_and_empty_actuator():
 def test_scaled_stablesoft_xml_compiles_with_expected_counts():
     xml = _build_xml()
     model = mujoco.MjModel.from_xml_string(xml)
+    xml_root = ET.fromstring(xml)
+    actuator = xml_root.find("actuator")
 
     assert model.nbody == 11
     assert model.njnt == 9
@@ -582,6 +618,7 @@ def test_scaled_stablesoft_xml_compiles_with_expected_counts():
     assert model.ntendon == 4
     assert model.nu == 0
     assert model.nsensor == 10
+    assert actuator is None or len(actuator) == 0
     assert "<actuator>" not in xml
     assert "<muscle" not in xml
     assert "<motor" not in xml
