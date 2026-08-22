@@ -6,6 +6,12 @@ import mujoco
 import numpy as np
 import pytest
 
+from multi_drone_mujoco.examples.scaled_stablesoft_passive_demo import (
+    _VIEWER_SHUTDOWN_GRACE_SECONDS,
+    _build_viewer_overlay,
+    _closing_viewer,
+    _try_update_viewer_overlay,
+)
 from multi_drone_mujoco.tests._scaled_stablesoft_coupled import (
     ANGULAR_MOMENTUM_MAX,
     ANGULAR_MOMENTUM_TAIL_SLOPE,
@@ -27,6 +33,148 @@ from multi_drone_mujoco.tests._scaled_stablesoft_coupled import (
 
 
 DIRECTIONS = ("+x", "-x", "+y", "-y")
+
+
+class _FakeViewer:
+    def __init__(self, error=None, close_error=None, events=None):
+        self.error = error
+        self.close_error = close_error
+        self.events = events
+        self.overlays = []
+        self.close_calls = 0
+
+    def set_texts(self, overlay):
+        self.overlays.append(overlay)
+        if self.error is not None:
+            raise self.error
+
+    def close(self):
+        self.close_calls += 1
+        if self.events is not None:
+            self.events.append("close")
+        if self.close_error is not None:
+            raise self.close_error
+
+
+def test_b4_viewer_overlay_matches_mujoco_tuple_contract():
+    overlay = _build_viewer_overlay("hover", 0.1254, 2)
+
+    assert isinstance(overlay, tuple)
+    assert not isinstance(overlay, dict)
+    assert len(overlay) == 4
+    assert overlay[0] == mujoco.mjtFontScale.mjFONTSCALE_150
+    assert overlay[1] == mujoco.mjtGridPos.mjGRID_TOPLEFT
+    assert overlay[2] == "scenario\ntime\ncontacts"
+    assert overlay[3] == "hover\n0.125 s\n2"
+
+
+def test_b4_viewer_overlay_update_succeeds_with_fake_viewer():
+    viewer = _FakeViewer()
+
+    enabled = _try_update_viewer_overlay(
+        viewer, "open-loop-release", 1.25, 0
+    )
+
+    assert enabled
+    assert len(viewer.overlays) == 1
+    assert isinstance(viewer.overlays[0], tuple)
+    assert not isinstance(viewer.overlays[0], dict)
+
+
+def test_b4_viewer_overlay_value_error_disables_future_updates(capsys):
+    viewer = _FakeViewer(ValueError("unsupported overlay"))
+    simulation_continued = []
+
+    enabled = _try_update_viewer_overlay(viewer, "hover", 0.1, 0)
+    simulation_continued.append("step_after_overlay_failure")
+    enabled = _try_update_viewer_overlay(
+        viewer, "hover", 0.2, 0, enabled=enabled
+    )
+    simulation_continued.append("next_step")
+
+    assert not enabled
+    assert len(viewer.overlays) == 1
+    assert simulation_continued == [
+        "step_after_overlay_failure",
+        "next_step",
+    ]
+    captured = capsys.readouterr()
+    assert captured.err.count("viewer overlay disabled") == 1
+    assert "unsupported overlay" in captured.err
+
+
+def test_b4_viewer_lifecycle_closes_then_waits_on_normal_exit():
+    events = []
+    viewer = _FakeViewer(events=events)
+
+    def fake_sleep(seconds):
+        events.append(("sleep", seconds))
+
+    with _closing_viewer(viewer, sleep_fn=fake_sleep):
+        pass
+
+    assert viewer.close_calls == 1
+    assert events == [
+        "close",
+        ("sleep", _VIEWER_SHUTDOWN_GRACE_SECONDS),
+    ]
+    assert _VIEWER_SHUTDOWN_GRACE_SECONDS == 2.0
+
+
+def test_b4_viewer_lifecycle_closes_and_waits_before_propagating_exception():
+    events = []
+    viewer = _FakeViewer(events=events)
+
+    def fake_sleep(seconds):
+        events.append(("sleep", seconds))
+
+    with pytest.raises(RuntimeError, match="stepping failed"):
+        with _closing_viewer(viewer, sleep_fn=fake_sleep):
+            raise RuntimeError("stepping failed")
+
+    assert viewer.close_calls == 1
+    assert events == [
+        "close",
+        ("sleep", _VIEWER_SHUTDOWN_GRACE_SECONDS),
+    ]
+
+
+def test_b4_viewer_lifecycle_waits_when_close_raises():
+    events = []
+    viewer = _FakeViewer(
+        close_error=RuntimeError("close failed"), events=events
+    )
+
+    def fake_sleep(seconds):
+        events.append(("sleep", seconds))
+
+    with pytest.raises(RuntimeError, match="close failed"):
+        with _closing_viewer(viewer, sleep_fn=fake_sleep):
+            pass
+
+    assert viewer.close_calls == 1
+    assert events == [
+        "close",
+        ("sleep", _VIEWER_SHUTDOWN_GRACE_SECONDS),
+    ]
+
+
+def test_b4_viewer_lifecycle_cleans_up_before_keyboard_interrupt_propagates():
+    events = []
+    viewer = _FakeViewer(events=events)
+
+    def fake_sleep(seconds):
+        events.append(("sleep", seconds))
+
+    with pytest.raises(KeyboardInterrupt):
+        with _closing_viewer(viewer, sleep_fn=fake_sleep):
+            raise KeyboardInterrupt
+
+    assert viewer.close_calls == 1
+    assert events == [
+        "close",
+        ("sleep", _VIEWER_SHUTDOWN_GRACE_SECONDS),
+    ]
 
 
 @pytest.fixture(scope="module")

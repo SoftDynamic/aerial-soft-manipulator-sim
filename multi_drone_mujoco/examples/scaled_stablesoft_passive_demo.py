@@ -9,6 +9,7 @@ that happens, run the independent headless diagnostic CLI documented by
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 import math
 import sys
 import time
@@ -28,6 +29,64 @@ from multi_drone_mujoco.utils.enums import ActionType, DroneModel, Physics
 JOINT_STIFFNESS = 0.003086
 TARGET_DAMPING_RATIO = 0.3
 MOUNT_Z = -0.015
+_VIEWER_SHUTDOWN_GRACE_SECONDS = 2.0
+
+
+def _build_viewer_overlay(scenario, sim_time, contacts):
+    """Build one MuJoCo viewer overlay entry."""
+    return (
+        mujoco.mjtFontScale.mjFONTSCALE_150,
+        mujoco.mjtGridPos.mjGRID_TOPLEFT,
+        "scenario\ntime\ncontacts",
+        f"{scenario}\n{sim_time:.3f} s\n{contacts}",
+    )
+
+
+def _try_update_viewer_overlay(
+    viewer,
+    scenario,
+    sim_time,
+    contacts,
+    *,
+    enabled=True,
+):
+    """Update the optional overlay, disabling it after API incompatibility."""
+    if not enabled:
+        return False
+    try:
+        viewer.set_texts(
+            _build_viewer_overlay(scenario, sim_time, contacts)
+        )
+    except (AttributeError, TypeError, ValueError) as exc:
+        print(
+            "viewer overlay disabled after set_texts compatibility "
+            f"error: {exc}",
+            file=sys.stderr,
+        )
+        return False
+    return True
+
+
+@contextmanager
+def _closing_viewer(
+    viewer,
+    *,
+    shutdown_grace_s=_VIEWER_SHUTDOWN_GRACE_SECONDS,
+    sleep_fn=time.sleep,
+):
+    """Close a viewer once, then let its native teardown finish."""
+    try:
+        yield viewer
+    finally:
+        close = getattr(viewer, "close", None)
+        if callable(close):
+            try:
+                close()
+            finally:
+                # MuJoCo's passive viewer closes on a native background
+                # thread.  Keep model/data alive until GLFW/X11 teardown has
+                # completed before run_viewer reaches env.close().
+                sleep_fn(shutdown_grace_s)
 
 
 def _spec():
@@ -98,74 +157,82 @@ def run_viewer(scenario, sim_freq, direction):
         rpm = np.full(4, env.HOVER_RPM)
         warning_counts = tuple(int(item.number) for item in env.data.warning)
         warning_triggered = False
-        viewer = mujoco.viewer.launch_passive(env.model, env.data)
-        can_sync = callable(getattr(viewer, "sync", None))
-        can_check_running = callable(getattr(viewer, "is_running", None))
-        can_set_text = callable(getattr(viewer, "set_texts", None))
-        text_fallback_reported = False
-        start_wall = time.perf_counter()
-        requested_steps = int(round(duration * sim_freq))
-        for step_index in range(1, requested_steps + 1):
-            if can_check_running and not viewer.is_running():
-                break
-            env._physics(rpm, 0)
-            mujoco.mj_step(env.model, env.data)
-            current_counts = tuple(
-                int(item.number) for item in env.data.warning
+        launched_viewer = mujoco.viewer.launch_passive(env.model, env.data)
+        with _closing_viewer(launched_viewer) as viewer:
+            can_sync = callable(getattr(viewer, "sync", None))
+            can_check_running = callable(
+                getattr(viewer, "is_running", None)
             )
-            warning_triggered = warning_triggered or any(
-                current > previous
-                for current, previous in zip(current_counts, warning_counts)
-            )
-            warning_counts = current_counts
-            if not (
-                math.isfinite(float(env.data.time))
-                and np.all(np.isfinite(env.data.qpos))
-                and np.all(np.isfinite(env.data.qvel))
-            ):
-                print("raw state became non-finite; stopping", file=sys.stderr)
-                break
-            mujoco.mj_forward(env.model, env.data)
-            current_counts = tuple(
-                int(item.number) for item in env.data.warning
-            )
-            warning_triggered = warning_triggered or any(
-                current > previous
-                for current, previous in zip(current_counts, warning_counts)
-            )
-            warning_counts = current_counts
-            if warning_triggered:
-                print("MuJoCo warning latched; stopping", file=sys.stderr)
-                break
-            if can_set_text and step_index % max(1, sim_freq // 10) == 0:
-                try:
-                    viewer.set_texts(
-                        {
-                            "scenario": scenario,
-                            "time": f"{env.data.time:.3f} s",
-                            "contacts": str(env.data.ncon),
-                        }
-                    )
-                except (AttributeError, TypeError):
-                    can_set_text = False
-            if not can_set_text and not text_fallback_reported:
+            overlay_enabled = callable(getattr(viewer, "set_texts", None))
+            if not overlay_enabled:
                 print(
-                    f"viewer overlay unavailable; {scenario=} {sim_freq=}",
-                    flush=True,
+                    "viewer overlay disabled: set_texts is unavailable",
+                    file=sys.stderr,
                 )
-                text_fallback_reported = True
-            if can_sync:
-                viewer.sync()
-            target_wall = start_wall + step_index / sim_freq
-            remaining = target_wall - time.perf_counter()
-            if remaining > 0:
-                time.sleep(remaining)
-            if scenario == "open-loop-release" and env.data.ncon:
-                print(f"first contact at t={env.data.time:.7f} s")
-                break
-        close = getattr(viewer, "close", None)
-        if callable(close):
-            close()
+            start_wall = time.perf_counter()
+            requested_steps = int(round(duration * sim_freq))
+            for step_index in range(1, requested_steps + 1):
+                if can_check_running and not viewer.is_running():
+                    break
+                env._physics(rpm, 0)
+                mujoco.mj_step(env.model, env.data)
+                current_counts = tuple(
+                    int(item.number) for item in env.data.warning
+                )
+                warning_triggered = warning_triggered or any(
+                    current > previous
+                    for current, previous in zip(
+                        current_counts, warning_counts
+                    )
+                )
+                warning_counts = current_counts
+                if not (
+                    math.isfinite(float(env.data.time))
+                    and np.all(np.isfinite(env.data.qpos))
+                    and np.all(np.isfinite(env.data.qvel))
+                ):
+                    print(
+                        "raw state became non-finite; stopping",
+                        file=sys.stderr,
+                    )
+                    break
+                mujoco.mj_forward(env.model, env.data)
+                current_counts = tuple(
+                    int(item.number) for item in env.data.warning
+                )
+                warning_triggered = warning_triggered or any(
+                    current > previous
+                    for current, previous in zip(
+                        current_counts, warning_counts
+                    )
+                )
+                warning_counts = current_counts
+                if warning_triggered:
+                    print(
+                        "MuJoCo warning latched; stopping",
+                        file=sys.stderr,
+                    )
+                    break
+                if (
+                    overlay_enabled
+                    and step_index % max(1, sim_freq // 10) == 0
+                ):
+                    overlay_enabled = _try_update_viewer_overlay(
+                        viewer,
+                        scenario,
+                        env.data.time,
+                        env.data.ncon,
+                        enabled=overlay_enabled,
+                    )
+                if can_sync:
+                    viewer.sync()
+                target_wall = start_wall + step_index / sim_freq
+                remaining = target_wall - time.perf_counter()
+                if remaining > 0:
+                    time.sleep(remaining)
+                if scenario == "open-loop-release" and env.data.ncon:
+                    print(f"first contact at t={env.data.time:.7f} s")
+                    break
     finally:
         env.close()
 
@@ -187,11 +254,7 @@ def main(argv=None):
     parser.add_argument("--sim-freq", type=int, choices=(2400, 4800), default=2400)
     parser.add_argument("--direction", choices=("+x", "-x", "+y", "-y"), default="+x")
     args = parser.parse_args(argv)
-    try:
-        run_viewer(args.scenario, args.sim_freq, args.direction)
-    except Exception as exc:
-        print(f"viewer failed with Python exception: {exc}", file=sys.stderr)
-        return 1
+    run_viewer(args.scenario, args.sim_freq, args.direction)
     return 0
 
 
