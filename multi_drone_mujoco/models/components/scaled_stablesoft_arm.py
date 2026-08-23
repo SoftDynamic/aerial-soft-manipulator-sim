@@ -5,6 +5,11 @@ from dataclasses import dataclass
 from numbers import Complex, Real
 from typing import Optional, Tuple, Union
 
+from multi_drone_mujoco.models.components.tendon_drive import (
+    IdealTendonTensionSpec,
+    build_ideal_tendon_tension_actuator_xml,
+)
+
 
 _STABLESOFT_REFERENCE_LENGTH = 9 * 0.096
 _STABLESOFT_TENDON_RANGE_UPPER = 2.0
@@ -479,6 +484,7 @@ class ArmMjcfManifest:
     ball_joint_names: Tuple[str, ...]
     routing_site_names: Tuple[str, ...]
     tendon_names: Tuple[str, ...]
+    tendon_actuator_names: Tuple[str, ...]
     tendon_sensor_names: Tuple[str, ...]
     tendon_site_routes: Tuple[Tuple[str, ...], ...]
     arm_mount_adapter_geom_name: str
@@ -520,8 +526,10 @@ def build_scaled_stablesoft_arm_mjcf(
     drone_prefix: str,
     spec: ScaledStableSoftArmSpec,
     mount_z: float,
+    *,
+    tendon_drive: Optional[IdealTendonTensionSpec] = None,
 ) -> ArmMjcfFragments:
-    """Build the passive nine-segment arm and its four tendon routes."""
+    """Build the nine-segment arm, tendon routes, and optional drive."""
     segment_names = tuple(
         _segment_body_name(drone_prefix, segment_index)
         for segment_index in range(spec.num_segments)
@@ -649,11 +657,22 @@ def build_scaled_stablesoft_arm_mjcf(
             f'    <tendonpos name="{sensor_name}" tendon="{tendon_name}"/>'
         )
 
+    actuator_xml = ""
+    actuator_names = ()
+    if tendon_drive is not None:
+        actuator_xml, actuator_names = (
+            build_ideal_tendon_tension_actuator_xml(
+                tendon_names,
+                tendon_drive,
+            )
+        )
+
     manifest = ArmMjcfManifest(
         segment_body_names=segment_names,
         ball_joint_names=joint_names,
         routing_site_names=tuple(all_routing_site_names),
         tendon_names=tuple(tendon_names),
+        tendon_actuator_names=actuator_names,
         tendon_sensor_names=tuple(sensor_names),
         tendon_site_routes=tuple(route_names),
         arm_mount_adapter_geom_name=adapter_geom_name,
@@ -664,7 +683,7 @@ def build_scaled_stablesoft_arm_mjcf(
     return ArmMjcfFragments(
         worldbody_xml=parent_visual_xml + child_xml,
         tendon_xml="\n".join(tendon_lines),
-        actuator_xml="",
+        actuator_xml=actuator_xml,
         sensor_xml="\n".join(sensor_lines),
         manifest=manifest,
     )

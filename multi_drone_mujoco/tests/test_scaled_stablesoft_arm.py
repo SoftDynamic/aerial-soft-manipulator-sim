@@ -580,6 +580,7 @@ def test_scaled_stablesoft_fragments_have_stable_manifest_and_empty_actuator():
     assert len(manifest.ball_joint_names) == 8
     assert len(manifest.routing_site_names) == 72
     assert len(manifest.tendon_names) == 4
+    assert manifest.tendon_actuator_names == ()
     assert len(manifest.tendon_sensor_names) == 4
     assert len(manifest.tendon_site_routes) == 4
     assert all(len(route) == 18 for route in manifest.tendon_site_routes)

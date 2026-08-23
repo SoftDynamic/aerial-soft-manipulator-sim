@@ -12,6 +12,9 @@ from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ScaledStableSoftArmSpec,
     build_scaled_stablesoft_arm_mjcf,
 )
+from multi_drone_mujoco.models.components.tendon_drive import (
+    IdealTendonTensionSpec,
+)
 
 
 MOUNT_Z = -0.015
@@ -304,6 +307,7 @@ def build_fixed_arm_fixture(
     sim_freq: int,
     ctrl_freq: int,
     integrator: str,
+    tendon_drive: Optional[IdealTendonTensionSpec] = None,
 ) -> FixedArmFixture:
     """Compile the production arm fragment under a welded test fixture."""
     if plane not in _FIXTURE_QUATERNIONS:
@@ -313,8 +317,19 @@ def build_fixed_arm_fixture(
     if integrator not in ("RK4", "implicitfast"):
         raise ValueError("integrator must be RK4 or implicitfast")
 
-    fragments = build_scaled_stablesoft_arm_mjcf("fixture", spec, MOUNT_Z)
+    fragments = build_scaled_stablesoft_arm_mjcf(
+        "fixture",
+        spec,
+        MOUNT_Z,
+        tendon_drive=tendon_drive,
+    )
     fixture_quaternion = _quaternion_text(_FIXTURE_QUATERNIONS[plane])
+    actuator_section = ""
+    if fragments.actuator_xml:
+        actuator_section = f'''  <actuator>
+{fragments.actuator_xml}
+  </actuator>
+'''
     xml = f'''<mujoco model="scaled_stablesoft_fixed_{plane}">
   <option gravity="0 0 -9.81" timestep="{1.0 / sim_freq}" integrator="{integrator}"/>
   <compiler inertiafromgeom="false" autolimits="true"/>
@@ -325,7 +340,7 @@ def build_fixed_arm_fixture(
   <tendon>
 {fragments.tendon_xml}
   </tendon>
-  <sensor>
+{actuator_section}  <sensor>
 {fragments.sensor_xml}
   </sensor>
 </mujoco>
