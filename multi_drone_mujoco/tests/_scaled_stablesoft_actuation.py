@@ -3,7 +3,7 @@
 from dataclasses import dataclass
 import math
 from numbers import Real
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union
 
 import mujoco
 import numpy as np
@@ -54,84 +54,16 @@ def _aligned_ticks(name: str, duration_s: float, frequency: int) -> int:
     return ticks
 
 
-@dataclass(frozen=True)
-class TendonActuatorBinding:
-    """One manifest-resolved tendon actuator and its storage addresses."""
+class _ActiveRunGrid:
+    """Shared timing properties for fixed-root active test configs."""
 
-    tendon_name: str
-    actuator_name: str
-    tendon_id: int
-    actuator_id: int
-    control_address: int
-    output_address: int
-
-
-@dataclass(frozen=True)
-class ActiveTendonRunConfig:
-    """Deterministic fixed-root single-tendon experiment configuration."""
-
-    corner: str
-    final_tension_n: float
-    sim_freq: int = 2400
-    ctrl_freq: int = CTRL_FREQ
-    ramp_duration_s: float = RAMP_DURATION_S
-    total_duration_s: float = TOTAL_DURATION_S
-    steady_window_start_s: float = STEADY_WINDOW_START_S
-    integrator: str = INTEGRATOR
-    max_tension_n: float = MAX_TENSION_N
-
-    def __post_init__(self):
-        if self.corner not in CORNERS:
-            raise ValueError(f"corner must be one of {CORNERS}")
-        for name in ("sim_freq", "ctrl_freq"):
-            value = getattr(self, name)
-            if isinstance(value, bool) or not isinstance(value, int):
-                raise ValueError(f"{name} must be an integer")
-            if value <= 0:
-                raise ValueError(f"{name} must be positive")
-        if self.sim_freq % self.ctrl_freq != 0:
-            raise ValueError("sim_freq must be divisible by ctrl_freq")
-        if self.integrator != "implicitfast":
-            raise ValueError("active characterization requires implicitfast")
-
-        for name in (
-            "final_tension_n",
-            "ramp_duration_s",
-            "total_duration_s",
-            "steady_window_start_s",
-            "max_tension_n",
-        ):
-            object.__setattr__(
-                self,
-                name,
-                _finite_float(name, getattr(self, name)),
-            )
-        if self.max_tension_n <= 0:
-            raise ValueError("max_tension_n must be positive")
-        if not 0 < self.final_tension_n <= self.max_tension_n:
-            raise ValueError(
-                "final_tension_n must be positive and not exceed max_tension_n"
-            )
-        if self.ramp_duration_s <= 0:
-            raise ValueError("ramp_duration_s must be positive")
-        if self.total_duration_s <= self.ramp_duration_s:
-            raise ValueError("total_duration_s must exceed ramp_duration_s")
-        if not (
-            self.ramp_duration_s
-            < self.steady_window_start_s
-            < self.total_duration_s
-        ):
-            raise ValueError(
-                "steady_window_start_s must lie after the ramp and before "
-                "the end"
-            )
-        _ = self.ramp_ticks
-        _ = self.total_ticks
-        _aligned_ticks(
-            "steady_window_start_s",
-            self.steady_window_start_s,
-            self.ctrl_freq,
-        )
+    sim_freq: int
+    ctrl_freq: int
+    ramp_duration_s: float
+    total_duration_s: float
+    steady_window_start_s: float
+    integrator: str
+    max_tension_n: float
 
     @property
     def ramp_ticks(self) -> int:
@@ -156,6 +88,156 @@ class ActiveTendonRunConfig:
     @property
     def requested_steps(self) -> int:
         return self.total_ticks * self.sample_stride
+
+
+def _normalize_active_run_grid(config: _ActiveRunGrid) -> None:
+    """Normalize and validate shared active-run timing fields in place."""
+    for name in ("sim_freq", "ctrl_freq"):
+        value = getattr(config, name)
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(f"{name} must be an integer")
+        if value <= 0:
+            raise ValueError(f"{name} must be positive")
+    if config.sim_freq % config.ctrl_freq != 0:
+        raise ValueError("sim_freq must be divisible by ctrl_freq")
+    if config.integrator != "implicitfast":
+        raise ValueError("active characterization requires implicitfast")
+
+    for name in (
+        "ramp_duration_s",
+        "total_duration_s",
+        "steady_window_start_s",
+        "max_tension_n",
+    ):
+        object.__setattr__(
+            config,
+            name,
+            _finite_float(name, getattr(config, name)),
+        )
+    if config.max_tension_n <= 0:
+        raise ValueError("max_tension_n must be positive")
+    if config.max_tension_n > MAX_TENSION_N:
+        raise ValueError(
+            f"max_tension_n must not exceed the {MAX_TENSION_N} N "
+            "C1 active-dynamics diagnostic limit"
+        )
+    if config.ramp_duration_s <= 0:
+        raise ValueError("ramp_duration_s must be positive")
+    if config.total_duration_s <= config.ramp_duration_s:
+        raise ValueError("total_duration_s must exceed ramp_duration_s")
+    if not (
+        config.ramp_duration_s
+        < config.steady_window_start_s
+        < config.total_duration_s
+    ):
+        raise ValueError(
+            "steady_window_start_s must lie after the ramp and before "
+            "the end"
+        )
+    _ = config.ramp_ticks
+    _ = config.total_ticks
+    _aligned_ticks(
+        "steady_window_start_s",
+        config.steady_window_start_s,
+        config.ctrl_freq,
+    )
+
+
+@dataclass(frozen=True)
+class TendonActuatorBinding:
+    """One manifest-resolved tendon actuator and its storage addresses."""
+
+    tendon_name: str
+    actuator_name: str
+    tendon_id: int
+    actuator_id: int
+    control_address: int
+    output_address: int
+
+
+@dataclass(frozen=True)
+class ActiveTendonRunConfig(_ActiveRunGrid):
+    """Deterministic fixed-root single-tendon experiment configuration."""
+
+    corner: str
+    final_tension_n: float
+    sim_freq: int = 2400
+    ctrl_freq: int = CTRL_FREQ
+    ramp_duration_s: float = RAMP_DURATION_S
+    total_duration_s: float = TOTAL_DURATION_S
+    steady_window_start_s: float = STEADY_WINDOW_START_S
+    integrator: str = INTEGRATOR
+    max_tension_n: float = MAX_TENSION_N
+
+    def __post_init__(self):
+        if self.corner not in CORNERS:
+            raise ValueError(f"corner must be one of {CORNERS}")
+        _normalize_active_run_grid(self)
+        object.__setattr__(
+            self,
+            "final_tension_n",
+            _finite_float("final_tension_n", self.final_tension_n),
+        )
+        if not 0 < self.final_tension_n <= self.max_tension_n:
+            raise ValueError(
+                "final_tension_n must be positive and not exceed max_tension_n"
+            )
+
+
+@dataclass(frozen=True)
+class TendonCommandRunConfig(_ActiveRunGrid):
+    """Deterministic fixed-root four-tendon command configuration."""
+
+    final_tension_command_n: Tuple[float, float, float, float]
+    sim_freq: int = 2400
+    ctrl_freq: int = CTRL_FREQ
+    ramp_duration_s: float = RAMP_DURATION_S
+    total_duration_s: float = TOTAL_DURATION_S
+    steady_window_start_s: float = STEADY_WINDOW_START_S
+    integrator: str = INTEGRATOR
+    max_tension_n: float = MAX_TENSION_N
+
+    def __post_init__(self):
+        _normalize_active_run_grid(self)
+        try:
+            raw_command = tuple(self.final_tension_command_n)
+        except TypeError as exc:
+            raise ValueError(
+                "final_tension_command_n must be a four-value sequence"
+            ) from exc
+        if len(raw_command) != len(CORNERS):
+            raise ValueError(
+                "final_tension_command_n must contain exactly four values"
+            )
+        command = tuple(
+            _finite_float(f"final_tension_command_n[{index}]", value)
+            for index, value in enumerate(raw_command)
+        )
+        if any(value < 0 for value in command):
+            raise ValueError(
+                "final_tension_command_n values must be non-negative"
+            )
+        if any(value > self.max_tension_n for value in command):
+            raise ValueError(
+                "final_tension_command_n values must not exceed "
+                "max_tension_n"
+            )
+        if not any(value > 0 for value in command):
+            raise ValueError(
+                "final_tension_command_n must activate at least one tendon"
+            )
+        object.__setattr__(self, "final_tension_command_n", command)
+
+    @property
+    def active_indices(self) -> Tuple[int, ...]:
+        return tuple(
+            index
+            for index, value in enumerate(self.final_tension_command_n)
+            if value > 0
+        )
+
+
+ActiveTraceConfig = Union[ActiveTendonRunConfig, TendonCommandRunConfig]
 
 
 @dataclass(frozen=True)
@@ -197,17 +279,23 @@ class ActiveSafetySummary:
     maximum_command_tendon_power_residual_w: float
     maximum_actuator_length_sign_residual_m: float
     maximum_actuator_velocity_sign_residual_m_s: float
+    maximum_abs_joint_twist_rad: float
+    maximum_joint_bend_rad: float
+    maximum_abs_composite_twist_rad: float
+    maximum_composite_bend_rad: float
 
 
 @dataclass(frozen=True)
 class ActiveTendonTrace:
     """Control-rate samples plus physics-rate safety extrema."""
 
-    config: ActiveTendonRunConfig
+    config: ActiveTraceConfig
     tendon_names: Tuple[str, ...]
     actuator_names: Tuple[str, ...]
     bindings: Tuple[TendonActuatorBinding, ...]
-    target_index: int
+    active_indices: Tuple[int, ...]
+    active_mask: np.ndarray
+    target_index: Optional[int]
     model_counts: Tuple[int, ...]
     tendon_ranges_m: np.ndarray
     tendon_limited: np.ndarray
@@ -232,6 +320,7 @@ class ActiveTendonTrace:
     generalized_actuator_power_w: np.ndarray
     actuator_space_power_w: np.ndarray
     tendon_coordinate_power_w: np.ndarray
+    command_tendon_power_w: np.ndarray
     warning_counts: np.ndarray
     contacts: np.ndarray
     tendon_range_margin_m: np.ndarray
@@ -260,14 +349,45 @@ class ActiveTendonTrace:
         return float(np.mean(self.total_bend_rad[self.steady_mask]))
 
     @property
+    def tendon_excursion_m(self) -> np.ndarray:
+        return _freeze(self.tendon_length_m - self.tendon_length_m[0])
+
+    @property
+    def steady_tendon_excursion_m(self) -> np.ndarray:
+        return _freeze(
+            np.mean(self.tendon_excursion_m[self.steady_mask], axis=0)
+        )
+
+    @property
+    def active_tendon_excursion_m(self) -> np.ndarray:
+        return _freeze(
+            self.tendon_excursion_m[:, np.asarray(self.active_indices)]
+        )
+
+    @property
+    def steady_active_tendon_excursion_m(self) -> np.ndarray:
+        return _freeze(
+            self.steady_tendon_excursion_m[np.asarray(self.active_indices)]
+        )
+
+    def _require_target_index(self) -> int:
+        if self.target_index is None:
+            raise ValueError(
+                "single-tendon excursion properties are undefined for a "
+                "multi-tendon trace"
+            )
+        return self.target_index
+
+    @property
     def target_tendon_excursion_m(self) -> np.ndarray:
-        values = self.tendon_length_m[:, self.target_index]
-        return values - values[0]
+        target_index = self._require_target_index()
+        return _freeze(self.tendon_excursion_m[:, target_index])
 
     @property
     def steady_target_tendon_excursion_m(self) -> float:
+        target_index = self._require_target_index()
         return float(
-            np.mean(self.target_tendon_excursion_m[self.steady_mask])
+            self.steady_tendon_excursion_m[target_index]
         )
 
     @property
@@ -289,6 +409,10 @@ class _SafetyAccumulator:
     maximum_command_tendon_power_residual_w: float = 0.0
     maximum_actuator_length_sign_residual_m: float = 0.0
     maximum_actuator_velocity_sign_residual_m_s: float = 0.0
+    maximum_abs_joint_twist_rad: float = 0.0
+    maximum_joint_bend_rad: float = 0.0
+    maximum_abs_composite_twist_rad: float = 0.0
+    maximum_composite_bend_rad: float = 0.0
 
 
 def _named_id(model, object_type, name: str) -> int:
@@ -349,15 +473,11 @@ def write_tension_command(fixture, command, drive_spec, *, bindings=None):
     return values, bindings
 
 
-def half_cosine_tension_at_tick(
-    final_tension_n: float,
+def half_cosine_ramp_scale_at_tick(
     control_tick: int,
     ramp_ticks: int,
 ) -> float:
-    """Return an endpoint-exact half-cosine ramp on an integer grid."""
-    final_tension_n = _finite_float("final_tension_n", final_tension_n)
-    if final_tension_n < 0:
-        raise ValueError("final_tension_n must be non-negative")
+    """Return an endpoint-exact dimensionless ramp scale in [0, 1]."""
     if isinstance(control_tick, bool) or not isinstance(control_tick, int):
         raise ValueError("control_tick must be an integer")
     if isinstance(ramp_ticks, bool) or not isinstance(ramp_ticks, int):
@@ -366,12 +486,27 @@ def half_cosine_tension_at_tick(
         raise ValueError("control_tick must be non-negative")
     if ramp_ticks <= 0:
         raise ValueError("ramp_ticks must be positive")
-    if control_tick == 0 or final_tension_n == 0:
+    if control_tick == 0:
         return 0.0
     if control_tick >= ramp_ticks:
-        return final_tension_n
-    return 0.5 * final_tension_n * (
+        return 1.0
+    return 0.5 * (
         1.0 - math.cos(math.pi * control_tick / ramp_ticks)
+    )
+
+
+def half_cosine_tension_at_tick(
+    final_tension_n: float,
+    control_tick: int,
+    ramp_ticks: int,
+) -> float:
+    """Return an endpoint-exact half-cosine tension ramp in newtons."""
+    final_tension_n = _finite_float("final_tension_n", final_tension_n)
+    if final_tension_n < 0:
+        raise ValueError("final_tension_n must be non-negative")
+    return final_tension_n * half_cosine_ramp_scale_at_tick(
+        control_tick,
+        ramp_ticks,
     )
 
 
@@ -514,6 +649,8 @@ def _check_synchronized_state(
     tendon_ranges,
     tendon_limited,
     command,
+    final_command,
+    active_mask,
     accumulator,
     *,
     stage,
@@ -624,27 +761,32 @@ def _check_synchronized_state(
         field="force_command_error_n",
         value=force_error,
     )
-    non_target = np.delete(force, CORNERS.index(config.corner))
+    inactive_force = force[~active_mask]
     _require(
-        np.all(np.abs(non_target) <= 1e-15),
+        np.all(np.abs(inactive_force) <= 1e-15),
         config,
         stage=stage,
         control_tick=control_tick,
         physics_step=physics_step,
         time_s=data.time,
-        field="non_target_force_n",
-        value=non_target.tolist(),
+        field="inactive_force_n",
+        value=inactive_force.tolist(),
     )
-    target_force = float(force[CORNERS.index(config.corner)])
+    active_force = force[active_mask]
+    active_final = np.asarray(final_command, dtype=float)[active_mask]
     _require(
-        -1e-15 <= target_force <= config.final_tension_n + 1e-15,
+        np.all(active_force >= -1e-15)
+        and np.all(active_force <= active_final + 1e-15),
         config,
         stage=stage,
         control_tick=control_tick,
         physics_step=physics_step,
         time_s=data.time,
-        field="target_force_n",
-        value=target_force,
+        field="active_force_n",
+        value={
+            "force": active_force.tolist(),
+            "final": active_final.tolist(),
+        },
     )
 
     moment_residual = float(
@@ -772,6 +914,24 @@ def _check_synchronized_state(
         accumulator.maximum_abs_qacc_rad_s2,
         float(np.max(np.abs(data.qacc))),
     )
+    joint_bend = np.linalg.norm(values["joints"][:, :2], axis=1)
+    composite_bend = float(np.linalg.norm(values["composite"][:2]))
+    accumulator.maximum_abs_joint_twist_rad = max(
+        accumulator.maximum_abs_joint_twist_rad,
+        float(np.max(np.abs(values["joints"][:, 2]))),
+    )
+    accumulator.maximum_joint_bend_rad = max(
+        accumulator.maximum_joint_bend_rad,
+        float(np.max(joint_bend)),
+    )
+    accumulator.maximum_abs_composite_twist_rad = max(
+        accumulator.maximum_abs_composite_twist_rad,
+        abs(float(values["composite"][2])),
+    )
+    accumulator.maximum_composite_bend_rad = max(
+        accumulator.maximum_composite_bend_rad,
+        composite_bend,
+    )
     return values
 
 
@@ -785,6 +945,8 @@ def _build_trace(
     config,
     fixture,
     bindings,
+    active_indices,
+    active_mask,
     target_index,
     tendon_ranges,
     tendon_limited,
@@ -828,6 +990,16 @@ def _build_trace(
         maximum_actuator_velocity_sign_residual_m_s=(
             accumulator.maximum_actuator_velocity_sign_residual_m_s
         ),
+        maximum_abs_joint_twist_rad=(
+            accumulator.maximum_abs_joint_twist_rad
+        ),
+        maximum_joint_bend_rad=accumulator.maximum_joint_bend_rad,
+        maximum_abs_composite_twist_rad=(
+            accumulator.maximum_abs_composite_twist_rad
+        ),
+        maximum_composite_bend_rad=(
+            accumulator.maximum_composite_bend_rad
+        ),
     )
     model = fixture.model
     return ActiveTendonTrace(
@@ -835,6 +1007,8 @@ def _build_trace(
         tendon_names=tuple(fixture.manifest.tendon_names),
         actuator_names=tuple(fixture.manifest.tendon_actuator_names),
         bindings=tuple(bindings),
+        active_indices=tuple(active_indices),
+        active_mask=_freeze(active_mask, dtype=bool),
         target_index=target_index,
         model_counts=(
             model.ntendon,
@@ -866,6 +1040,7 @@ def _build_trace(
         generalized_actuator_power_w=values("generalized_power"),
         actuator_space_power_w=values("actuator_power"),
         tendon_coordinate_power_w=values("tendon_power"),
+        command_tendon_power_w=values("command_tendon_power"),
         warning_counts=values("warning_counts", dtype=int),
         contacts=values("contacts", dtype=int),
         tendon_range_margin_m=values("margins"),
@@ -886,6 +1061,8 @@ def _record_control_sample(
     tendon_limited,
     initial_tip,
     command,
+    final_command,
+    active_mask,
     accumulator,
     *,
     control_tick,
@@ -901,6 +1078,8 @@ def _record_control_sample(
         tendon_ranges,
         tendon_limited,
         command,
+        final_command,
+        active_mask,
         accumulator,
         stage="control_sample",
         control_tick=control_tick,
@@ -929,6 +1108,7 @@ def _record_control_sample(
         "generalized_power": synchronized["generalized_power"],
         "actuator_power": synchronized["actuator_power"],
         "tendon_power": synchronized["tendon_power"],
+        "command_tendon_power": synchronized["command_tendon_power"],
         "warning_counts": _warning_counts(data),
         "contacts": int(data.ncon),
         "margins": synchronized["margins"],
@@ -937,10 +1117,16 @@ def _record_control_sample(
     }
 
 
-def run_single_tendon_characterization(
-    config: ActiveTendonRunConfig,
+def _run_tendon_command_characterization(
+    config: ActiveTraceConfig,
+    final_command,
+    *,
+    target_corner: Optional[str],
 ) -> ActiveTendonTrace:
-    """Run one fixed-root, vertical, single-tendon active trajectory."""
+    """Run the sole fixed-root active simulation loop."""
+    final_command = np.asarray(final_command, dtype=float)
+    active_mask = final_command > 0.0
+    active_indices = tuple(np.flatnonzero(active_mask).tolist())
     arm_spec = ScaledStableSoftArmSpec(
         joint_stiffness=JOINT_STIFFNESS,
         joint_damping=None,
@@ -960,6 +1146,9 @@ def run_single_tendon_characterization(
     model, data, manifest = fixture.model, fixture.data, fixture.manifest
     bindings = resolve_tendon_actuator_bindings(fixture)
     addresses = named_joint_addresses(model, manifest)
+    for corner, tendon_name in zip(CORNERS, manifest.tendon_names):
+        if not tendon_name.endswith(f"_{corner}_tendon"):
+            raise AssertionError("manifest corner order changed")
     tip_id = _named_id(
         model,
         mujoco.mjtObj.mjOBJ_SITE,
@@ -970,16 +1159,20 @@ def run_single_tendon_characterization(
         mujoco.mjtObj.mjOBJ_SITE,
         manifest.arm_root_site_name,
     )
-    target_matches = [
-        index
-        for index, name in enumerate(manifest.tendon_names)
-        if name.endswith(f"_{config.corner}_tendon")
-    ]
-    if len(target_matches) != 1:
-        raise AssertionError(f"unable to resolve target corner {config.corner}")
-    target_index = target_matches[0]
-    if target_index != CORNERS.index(config.corner):
-        raise AssertionError("manifest corner order changed")
+    target_index = None
+    if target_corner is not None:
+        target_matches = [
+            index
+            for index, name in enumerate(manifest.tendon_names)
+            if name.endswith(f"_{target_corner}_tendon")
+        ]
+        if len(target_matches) != 1:
+            raise AssertionError(
+                f"unable to resolve target corner {target_corner}"
+            )
+        target_index = target_matches[0]
+        if target_index != CORNERS.index(target_corner):
+            raise AssertionError("manifest corner order changed")
 
     tendon_ids = np.asarray(
         [binding.tendon_id for binding in bindings],
@@ -1059,13 +1252,11 @@ def run_single_tendon_characterization(
     records = []
     for control_tick in range(config.total_ticks + 1):
         expected_time = control_tick / config.ctrl_freq
-        tension = half_cosine_tension_at_tick(
-            config.final_tension_n,
+        ramp_scale = half_cosine_ramp_scale_at_tick(
             control_tick,
             config.ramp_ticks,
         )
-        requested_command = [0.0] * len(CORNERS)
-        requested_command[target_index] = tension
+        requested_command = ramp_scale * final_command
         command, current_bindings = write_tension_command(
             fixture,
             requested_command,
@@ -1111,6 +1302,8 @@ def run_single_tendon_characterization(
                 tendon_limited,
                 initial_tip,
                 command,
+                final_command,
+                active_mask,
                 accumulator,
                 control_tick=control_tick,
                 physics_step=accumulator.completed_steps,
@@ -1179,6 +1372,8 @@ def run_single_tendon_characterization(
                 tendon_ranges,
                 tendon_limited,
                 command,
+                final_command,
+                active_mask,
                 accumulator,
                 stage="after_forward",
                 control_tick=control_tick,
@@ -1215,6 +1410,8 @@ def run_single_tendon_characterization(
         config,
         fixture,
         bindings,
+        active_indices,
+        active_mask,
         target_index,
         tendon_ranges,
         tendon_limited,
@@ -1222,4 +1419,32 @@ def run_single_tendon_characterization(
         records,
         warning_latch,
         accumulator,
+    )
+
+
+def run_tendon_command_characterization(
+    config: TendonCommandRunConfig,
+) -> ActiveTendonTrace:
+    """Run one fixed-root, vertical four-tendon command trajectory."""
+    if not isinstance(config, TendonCommandRunConfig):
+        raise TypeError("config must be TendonCommandRunConfig")
+    return _run_tendon_command_characterization(
+        config,
+        config.final_tension_command_n,
+        target_corner=None,
+    )
+
+
+def run_single_tendon_characterization(
+    config: ActiveTendonRunConfig,
+) -> ActiveTendonTrace:
+    """Run the backward-compatible single-tendon active trajectory."""
+    if not isinstance(config, ActiveTendonRunConfig):
+        raise TypeError("config must be ActiveTendonRunConfig")
+    final_command = [0.0] * len(CORNERS)
+    final_command[CORNERS.index(config.corner)] = config.final_tension_n
+    return _run_tendon_command_characterization(
+        config,
+        final_command,
+        target_corner=config.corner,
     )
