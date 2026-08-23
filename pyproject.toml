@@ -35,5 +35,11 @@ dev = [
 [tool.setuptools.packages.find]
 include = ["multi_drone_mujoco*"]
 
+[tool.setuptools.package-data]
+multi_drone_mujoco = [
+    "assets/stablesoft/sim_bone.STL",
+    "assets/stablesoft/README.md",
+]
+
 [tool.pytest.ini_options]
 testpaths = ["multi_drone_mujoco/tests"]

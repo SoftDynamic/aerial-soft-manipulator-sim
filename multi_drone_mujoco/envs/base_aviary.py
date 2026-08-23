@@ -19,6 +19,7 @@ from gymnasium import spaces
 from multi_drone_mujoco.models.components.passive_arm import PassiveArmSpec
 from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ScaledStableSoftArmSpec,
+    ScaledStableSoftVisualSpec,
 )
 from multi_drone_mujoco.models.mjcf_builder import build_aviary_xml
 from multi_drone_mujoco.models.parameters import (
@@ -66,6 +67,7 @@ class BaseAviary(gym.Env):
         enable_3g_payload: bool = False,
         passive_arm: Optional[PassiveArmSpec] = None,
         scaled_stablesoft_arm: Optional[ScaledStableSoftArmSpec] = None,
+        scaled_stablesoft_visual: Optional[ScaledStableSoftVisualSpec] = None,
         integrator: str = "RK4",
     ):
         """Initialize the aviary.
@@ -113,6 +115,9 @@ class BaseAviary(gym.Env):
         scaled_stablesoft_arm : ScaledStableSoftArmSpec, optional
             Attach the nine-segment scaled StableSoft passive topology and
             four spatial tendon routes to one CF2X.
+        scaled_stablesoft_visual : ScaledStableSoftVisualSpec, optional
+            Select mesh or cylinder display geometry for the scaled
+            StableSoft arm. The default is mesh.
         integrator : str
             MuJoCo integrator name passed unchanged to the MJCF builder.
         """
@@ -121,6 +126,13 @@ class BaseAviary(gym.Env):
         if passive_arm is not None and scaled_stablesoft_arm is not None:
             raise ValueError(
                 "The scaled StableSoft arm cannot be combined with the passive arm"
+            )
+        if (
+            scaled_stablesoft_visual is not None
+            and scaled_stablesoft_arm is None
+        ):
+            raise ValueError(
+                "A scaled StableSoft visual requires a scaled StableSoft arm"
             )
 
         if enable_3g_payload:
@@ -197,6 +209,7 @@ class BaseAviary(gym.Env):
         self.ENABLE_3G_PAYLOAD = enable_3g_payload
         self.PASSIVE_ARM_SPEC = passive_arm
         self.SCALED_STABLESOFT_ARM_SPEC = scaled_stablesoft_arm
+        self.SCALED_STABLESOFT_VISUAL_SPEC = scaled_stablesoft_visual
         self.INTEGRATOR = integrator
 
         # Load drone parameters
@@ -281,6 +294,7 @@ class BaseAviary(gym.Env):
             enable_3g_payload=enable_3g_payload,
             passive_arm=passive_arm,
             scaled_stablesoft_arm=scaled_stablesoft_arm,
+            scaled_stablesoft_visual=scaled_stablesoft_visual,
         )
         self.model = mujoco.MjModel.from_xml_string(self._generated_xml)
         self.data = mujoco.MjData(self.model)

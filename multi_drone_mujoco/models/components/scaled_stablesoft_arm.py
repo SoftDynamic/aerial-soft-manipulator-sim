@@ -3,6 +3,7 @@
 import math
 from dataclasses import dataclass
 from numbers import Complex, Real
+from pathlib import Path
 from typing import Optional, Tuple, Union
 
 from multi_drone_mujoco.models.components.tendon_drive import (
@@ -11,7 +12,18 @@ from multi_drone_mujoco.models.components.tendon_drive import (
 )
 
 
-_STABLESOFT_REFERENCE_LENGTH = 9 * 0.096
+ORIGINAL_STABLESOFT_SEGMENT_PITCH_M = 0.096
+STABLESOFT_VISUAL_MESH_NAME = "scaled_stablesoft_segment_visual_mesh"
+STABLESOFT_VISUAL_MESH_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "assets"
+    / "stablesoft"
+    / "sim_bone.STL"
+)
+
+_STABLESOFT_REFERENCE_LENGTH = (
+    9 * ORIGINAL_STABLESOFT_SEGMENT_PITCH_M
+)
 _STABLESOFT_TENDON_RANGE_UPPER = 2.0
 _CORNER_SIGNS = (
     ("xp_yp", 1.0, 1.0),
@@ -21,6 +33,19 @@ _CORNER_SIGNS = (
 )
 
 _JointParameter = Union[float, Tuple[float, ...]]
+
+
+@dataclass(frozen=True)
+class ScaledStableSoftVisualSpec:
+    """Select the display-only geometry for scaled StableSoft segments."""
+
+    mode: str = "mesh"
+
+    def __post_init__(self):
+        if self.mode not in ("mesh", "cylinder"):
+            raise ValueError(
+                "Scaled StableSoft visual mode must be 'mesh' or 'cylinder'"
+            )
 
 
 def solid_cylinder_diagonal_inertia(
@@ -497,6 +522,7 @@ class ArmMjcfManifest:
 class ArmMjcfFragments:
     """MJCF children contributed to separate top-level model sections."""
 
+    asset_xml: str
     worldbody_xml: str
     tendon_xml: str
     actuator_xml: str
@@ -528,8 +554,26 @@ def build_scaled_stablesoft_arm_mjcf(
     mount_z: float,
     *,
     tendon_drive: Optional[IdealTendonTensionSpec] = None,
+    visual: Optional[ScaledStableSoftVisualSpec] = None,
 ) -> ArmMjcfFragments:
     """Build the nine-segment arm, tendon routes, and optional drive."""
+    if visual is None:
+        visual = ScaledStableSoftVisualSpec()
+    if not isinstance(visual, ScaledStableSoftVisualSpec):
+        raise TypeError("visual must be a ScaledStableSoftVisualSpec")
+
+    asset_xml = ""
+    if visual.mode == "mesh":
+        mesh_scale = (
+            spec.segment_pitch / ORIGINAL_STABLESOFT_SEGMENT_PITCH_M
+        )
+        scale_text = _float_text(mesh_scale)
+        asset_xml = (
+            f'    <mesh name="{STABLESOFT_VISUAL_MESH_NAME}" '
+            f'file="{STABLESOFT_VISUAL_MESH_PATH.as_posix()}" '
+            f'scale="{scale_text} {scale_text} {scale_text}"/>'
+        )
+
     segment_names = tuple(
         _segment_body_name(drone_prefix, segment_index)
         for segment_index in range(spec.num_segments)
@@ -618,9 +662,25 @@ def build_scaled_stablesoft_arm_mjcf(
                 f'{_float_text(-spec.segment_pitch)}" group="5"/>\n'
             )
 
+        if visual.mode == "mesh":
+            segment_geom_xml = (
+                f'        <geom name="{body_name}_geom" type="mesh" '
+                f'mesh="{STABLESOFT_VISUAL_MESH_NAME}" pos="0 0 0" '
+                'quat="0 1 0 0" group="2" rgba="0.2 0.4 0.9 1" '
+                'contype="0" conaffinity="0"/>'
+            )
+        else:
+            segment_geom_xml = (
+                f'        <geom name="{body_name}_geom" type="cylinder" '
+                f'pos="0 0 {_float_text(-half_pitch)}" '
+                f'size="{_float_text(spec.body_radius)} '
+                f'{_float_text(half_pitch)}" rgba="0.2 0.4 0.9 1" '
+                'contype="0" conaffinity="0"/>'
+            )
+
         child_xml = f'''      <body name="{body_name}" pos="0 0 {_float_text(body_z)}">
 {joint_xml}        <inertial pos="0 0 {_float_text(-half_pitch)}" mass="{_float_text(spec.segment_mass)}" diaginertia="{_float_text(transverse)} {_float_text(transverse)} {_float_text(axial)}"/>
-        <geom name="{body_name}_geom" type="cylinder" pos="0 0 {_float_text(-half_pitch)}" size="{_float_text(spec.body_radius)} {_float_text(half_pitch)}" rgba="0.2 0.4 0.9 1" contype="0" conaffinity="0"/>
+{segment_geom_xml}
 {root_site_xml}{sites_xml}{tip_xml}{child_xml}      </body>
 '''
 
@@ -681,6 +741,7 @@ def build_scaled_stablesoft_arm_mjcf(
         arm_tip_site_name=tip_site_name,
     )
     return ArmMjcfFragments(
+        asset_xml=asset_xml,
         worldbody_xml=parent_visual_xml + child_xml,
         tendon_xml="\n".join(tendon_lines),
         actuator_xml=actuator_xml,

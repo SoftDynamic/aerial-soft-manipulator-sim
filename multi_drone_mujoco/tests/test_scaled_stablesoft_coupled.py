@@ -6,10 +6,14 @@ import mujoco
 import numpy as np
 import pytest
 
+from multi_drone_mujoco.examples import scaled_stablesoft_passive_demo
 from multi_drone_mujoco.examples.scaled_stablesoft_passive_demo import (
+    _VIEWER_HOLD_REFRESH_SECONDS,
     _VIEWER_SHUTDOWN_GRACE_SECONDS,
+    _build_parser,
     _build_viewer_overlay,
     _closing_viewer,
+    _hold_final_viewer_frame,
     _try_update_viewer_overlay,
 )
 from multi_drone_mujoco.tests._scaled_stablesoft_coupled import (
@@ -54,6 +58,23 @@ class _FakeViewer:
             self.events.append("close")
         if self.close_error is not None:
             raise self.close_error
+
+
+class _FakeHoldingViewer:
+    def __init__(self, running_states, sync_error=None):
+        self.running_states = iter(running_states)
+        self.sync_error = sync_error
+        self.is_running_calls = 0
+        self.sync_calls = 0
+
+    def is_running(self):
+        self.is_running_calls += 1
+        return next(self.running_states)
+
+    def sync(self):
+        self.sync_calls += 1
+        if self.sync_error is not None:
+            raise self.sync_error
 
 
 def test_b4_viewer_overlay_matches_mujoco_tuple_contract():
@@ -175,6 +196,89 @@ def test_b4_viewer_lifecycle_cleans_up_before_keyboard_interrupt_propagates():
         "close",
         ("sleep", _VIEWER_SHUTDOWN_GRACE_SECONDS),
     ]
+
+
+def test_b4_viewer_parser_disables_final_frame_hold_by_default():
+    args = _build_parser().parse_args([])
+
+    assert args.hold_viewer_open is False
+
+
+def test_b4_viewer_parser_accepts_final_frame_hold_flag():
+    args = _build_parser().parse_args(["--hold-viewer-open"])
+
+    assert args.hold_viewer_open is True
+
+
+def test_b4_final_frame_hold_disabled_does_not_poll_or_wait():
+    viewer = _FakeHoldingViewer([True])
+    sleep_calls = []
+
+    _hold_final_viewer_frame(
+        viewer,
+        enabled=False,
+        sleep_fn=sleep_calls.append,
+    )
+
+    assert viewer.is_running_calls == 0
+    assert viewer.sync_calls == 0
+    assert sleep_calls == []
+
+
+def test_b4_final_frame_hold_refreshes_until_closed_without_stepping(
+    monkeypatch,
+):
+    viewer = _FakeHoldingViewer([True, True, False])
+    sleep_calls = []
+
+    def fail_if_stepped(*args, **kwargs):
+        raise AssertionError("mj_step must not run while holding final frame")
+
+    monkeypatch.setattr(
+        scaled_stablesoft_passive_demo.mujoco,
+        "mj_step",
+        fail_if_stepped,
+    )
+
+    _hold_final_viewer_frame(
+        viewer,
+        enabled=True,
+        sleep_fn=sleep_calls.append,
+    )
+
+    assert viewer.is_running_calls == 3
+    assert viewer.sync_calls == 2
+    assert sleep_calls == [
+        _VIEWER_HOLD_REFRESH_SECONDS,
+        _VIEWER_HOLD_REFRESH_SECONDS,
+    ]
+
+
+def test_b4_final_frame_hold_stops_cleanly_on_keyboard_interrupt():
+    viewer = _FakeHoldingViewer([True], sync_error=KeyboardInterrupt())
+    sleep_calls = []
+
+    _hold_final_viewer_frame(
+        viewer,
+        enabled=True,
+        sleep_fn=sleep_calls.append,
+    )
+
+    assert viewer.is_running_calls == 1
+    assert viewer.sync_calls == 1
+    assert sleep_calls == []
+
+
+def test_b4_final_frame_hold_without_viewer_does_not_wait():
+    sleep_calls = []
+
+    _hold_final_viewer_frame(
+        None,
+        enabled=True,
+        sleep_fn=sleep_calls.append,
+    )
+
+    assert sleep_calls == []
 
 
 @pytest.fixture(scope="module")

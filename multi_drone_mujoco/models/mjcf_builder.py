@@ -12,6 +12,7 @@ from multi_drone_mujoco.models.components.passive_arm import (
 )
 from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ScaledStableSoftArmSpec,
+    ScaledStableSoftVisualSpec,
     build_scaled_stablesoft_arm_mjcf,
 )
 from multi_drone_mujoco.models.parameters import (
@@ -42,6 +43,7 @@ def build_aviary_xml(
     enable_3g_payload: bool = False,
     passive_arm: Optional[PassiveArmSpec] = None,
     scaled_stablesoft_arm: Optional[ScaledStableSoftArmSpec] = None,
+    scaled_stablesoft_visual: Optional[ScaledStableSoftVisualSpec] = None,
 ) -> str:
     """Generate MuJoCo XML for the aviary with N drones."""
     if not isinstance(integrator, str):
@@ -55,6 +57,13 @@ def build_aviary_xml(
     if passive_arm is not None and scaled_stablesoft_arm is not None:
         raise ValueError(
             "The scaled StableSoft arm cannot be combined with the passive arm"
+        )
+    if (
+        scaled_stablesoft_visual is not None
+        and scaled_stablesoft_arm is None
+    ):
+        raise ValueError(
+            "A scaled StableSoft visual requires a scaled StableSoft arm"
         )
     if passive_arm is not None:
         if drone_model != DroneModel.CF2X:
@@ -99,6 +108,7 @@ def build_aviary_xml(
     actuators = ""
     sensors = ""
     tendons = ""
+    arm_assets = ""
 
     for d in range(num_drones):
         x, y, z = init_xyzs[d]
@@ -183,7 +193,10 @@ def build_aviary_xml(
                 prefix,
                 scaled_stablesoft_arm,
                 mount_z,
+                visual=scaled_stablesoft_visual,
             )
+            if arm_fragments.asset_xml:
+                arm_assets += "\n" + arm_fragments.asset_xml
             drone_bodies += arm_fragments.worldbody_xml
             tendons += arm_fragments.tendon_xml
             actuators += arm_fragments.actuator_xml
@@ -265,7 +278,7 @@ def build_aviary_xml(
     <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3" markrgb="0.8 0.8 0.8" width="300" height="300"/>
     <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.2"/>
 {visual_meshes}
-{collision_meshes}
+{collision_meshes}{arm_assets}
   </asset>
 
   <worldbody>

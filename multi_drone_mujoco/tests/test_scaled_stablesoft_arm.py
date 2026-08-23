@@ -11,6 +11,7 @@ from multi_drone_mujoco.envs.base_aviary import BaseAviary
 from multi_drone_mujoco.models.components.passive_arm import PassiveArmSpec
 from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ScaledStableSoftArmSpec,
+    ScaledStableSoftVisualSpec,
     build_scaled_stablesoft_arm_mjcf,
     solid_cylinder_diagonal_inertia,
 )
@@ -28,6 +29,7 @@ CORNERS = {
     "xn_yp": (-1.0, 1.0),
     "xn_yn": (-1.0, -1.0),
 }
+CYLINDER_VISUAL = ScaledStableSoftVisualSpec(mode="cylinder")
 
 
 def _spec(**overrides):
@@ -70,6 +72,7 @@ def _build_xml(spec=None, **overrides):
         "init_xyzs": np.array([[0.0, 0.0, 1.0]]),
         "init_rpys": np.zeros((1, 3)),
         "scaled_stablesoft_arm": _spec() if spec is None else spec,
+        "scaled_stablesoft_visual": CYLINDER_VISUAL,
     }
     kwargs.update(overrides)
     return build_aviary_xml(**kwargs)
@@ -90,6 +93,7 @@ def _make_env(**overrides):
         "act_type": ActionType.RPM,
         "render_mode": None,
         "scaled_stablesoft_arm": _spec(),
+        "scaled_stablesoft_visual": CYLINDER_VISUAL,
     }
     kwargs.update(overrides)
     return BaseAviary(**kwargs)
@@ -573,7 +577,9 @@ def test_environment_rejects_unsupported_scaled_stablesoft_combinations(
 
 
 def test_scaled_stablesoft_fragments_have_stable_manifest_and_empty_actuator():
-    fragments = build_scaled_stablesoft_arm_mjcf("drone0", _spec(), MOUNT_Z)
+    fragments = build_scaled_stablesoft_arm_mjcf(
+        "drone0", _spec(), MOUNT_Z, visual=CYLINDER_VISUAL
+    )
     manifest = fragments.manifest
 
     assert len(manifest.segment_body_names) == 9
@@ -600,6 +606,7 @@ def test_scaled_stablesoft_fragments_have_stable_manifest_and_empty_actuator():
         "drone0_scaled_stablesoft_arm_tip_site"
     )
     assert fragments.actuator_xml == ""
+    assert fragments.asset_xml == ""
     assert "<muscle" not in fragments.worldbody_xml + fragments.tendon_xml
     assert "<motor" not in fragments.worldbody_xml + fragments.tendon_xml
 
@@ -629,7 +636,9 @@ def test_scaled_stablesoft_xml_compiles_with_expected_counts():
 
 def test_scaled_stablesoft_named_body_joint_geometry_and_tip():
     spec = _spec()
-    fragments = build_scaled_stablesoft_arm_mjcf("drone0", spec, MOUNT_Z)
+    fragments = build_scaled_stablesoft_arm_mjcf(
+        "drone0", spec, MOUNT_Z, visual=CYLINDER_VISUAL
+    )
     model = mujoco.MjModel.from_xml_string(_build_xml(spec))
     data = mujoco.MjData(model)
     mujoco.mj_forward(model, data)

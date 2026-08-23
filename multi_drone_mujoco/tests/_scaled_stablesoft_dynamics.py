@@ -10,6 +10,7 @@ import numpy as np
 from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ArmMjcfManifest,
     ScaledStableSoftArmSpec,
+    ScaledStableSoftVisualSpec,
     build_scaled_stablesoft_arm_mjcf,
 )
 from multi_drone_mujoco.models.components.tendon_drive import (
@@ -308,6 +309,7 @@ def build_fixed_arm_fixture(
     ctrl_freq: int,
     integrator: str,
     tendon_drive: Optional[IdealTendonTensionSpec] = None,
+    visual: Optional[ScaledStableSoftVisualSpec] = None,
 ) -> FixedArmFixture:
     """Compile the production arm fragment under a welded test fixture."""
     if plane not in _FIXTURE_QUATERNIONS:
@@ -322,6 +324,7 @@ def build_fixed_arm_fixture(
         spec,
         MOUNT_Z,
         tendon_drive=tendon_drive,
+        visual=visual,
     )
     fixture_quaternion = _quaternion_text(_FIXTURE_QUATERNIONS[plane])
     actuator_section = ""
@@ -330,10 +333,16 @@ def build_fixed_arm_fixture(
 {fragments.actuator_xml}
   </actuator>
 '''
+    asset_section = ""
+    if fragments.asset_xml:
+        asset_section = f'''  <asset>
+{fragments.asset_xml}
+  </asset>
+'''
     xml = f'''<mujoco model="scaled_stablesoft_fixed_{plane}">
   <option gravity="0 0 -9.81" timestep="{1.0 / sim_freq}" integrator="{integrator}"/>
   <compiler inertiafromgeom="false" autolimits="true"/>
-  <worldbody>
+{asset_section}  <worldbody>
     <body name="fixture_mount" quat="{fixture_quaternion}">
 {fragments.worldbody_xml}    </body>
   </worldbody>

@@ -21,6 +21,7 @@ import numpy as np
 from multi_drone_mujoco.envs.base_aviary import BaseAviary
 from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ScaledStableSoftArmSpec,
+    ScaledStableSoftVisualSpec,
     build_scaled_stablesoft_arm_mjcf,
 )
 from multi_drone_mujoco.utils.enums import ActionType, DroneModel, Physics
@@ -30,6 +31,7 @@ JOINT_STIFFNESS = 0.003086
 TARGET_DAMPING_RATIO = 0.3
 MOUNT_Z = -0.015
 _VIEWER_SHUTDOWN_GRACE_SECONDS = 2.0
+_VIEWER_HOLD_REFRESH_SECONDS = 1.0 / 60.0
 
 
 def _build_viewer_overlay(scenario, sim_time, contacts):
@@ -89,6 +91,29 @@ def _closing_viewer(
                 sleep_fn(shutdown_grace_s)
 
 
+def _hold_final_viewer_frame(
+    viewer,
+    *,
+    enabled,
+    sleep_fn=time.sleep,
+):
+    """Refresh the final frame until the passive viewer is closed."""
+    if not enabled or viewer is None:
+        return
+
+    is_running = getattr(viewer, "is_running", None)
+    sync = getattr(viewer, "sync", None)
+    if not callable(is_running) or not callable(sync):
+        return
+
+    try:
+        while is_running():
+            sync()
+            sleep_fn(_VIEWER_HOLD_REFRESH_SECONDS)
+    except KeyboardInterrupt:
+        pass
+
+
 def _spec():
     return ScaledStableSoftArmSpec(
         joint_stiffness=JOINT_STIFFNESS,
@@ -127,7 +152,13 @@ def _initialize_bend(model, data, direction):
     mujoco.mj_forward(model, data)
 
 
-def run_viewer(scenario, sim_freq, direction):
+def run_viewer(
+    scenario,
+    sim_freq,
+    direction,
+    visual_mode="mesh",
+    hold_viewer_open=False,
+):
     env = BaseAviary(
         drone_model=DroneModel.CF2X,
         num_drones=1,
@@ -143,6 +174,9 @@ def run_viewer(scenario, sim_freq, direction):
         act_type=ActionType.RPM,
         render_mode=None,
         scaled_stablesoft_arm=_spec(),
+        scaled_stablesoft_visual=ScaledStableSoftVisualSpec(
+            mode=visual_mode
+        ),
         integrator="implicitfast",
     )
     try:
@@ -157,6 +191,7 @@ def run_viewer(scenario, sim_freq, direction):
         rpm = np.full(4, env.HOVER_RPM)
         warning_counts = tuple(int(item.number) for item in env.data.warning)
         warning_triggered = False
+        simulation_failed = False
         launched_viewer = mujoco.viewer.launch_passive(env.model, env.data)
         with _closing_viewer(launched_viewer) as viewer:
             can_sync = callable(getattr(viewer, "sync", None))
@@ -195,6 +230,7 @@ def run_viewer(scenario, sim_freq, direction):
                         "raw state became non-finite; stopping",
                         file=sys.stderr,
                     )
+                    simulation_failed = True
                     break
                 mujoco.mj_forward(env.model, env.data)
                 current_counts = tuple(
@@ -212,6 +248,7 @@ def run_viewer(scenario, sim_freq, direction):
                         "MuJoCo warning latched; stopping",
                         file=sys.stderr,
                     )
+                    simulation_failed = True
                     break
                 if (
                     overlay_enabled
@@ -233,11 +270,16 @@ def run_viewer(scenario, sim_freq, direction):
                 if scenario == "open-loop-release" and env.data.ncon:
                     print(f"first contact at t={env.data.time:.7f} s")
                     break
+            if not simulation_failed:
+                _hold_final_viewer_frame(
+                    viewer,
+                    enabled=hold_viewer_open,
+                )
     finally:
         env.close()
 
 
-def main(argv=None):
+def _build_parser():
     parser = argparse.ArgumentParser(
         description=__doc__,
         epilog=(
@@ -253,8 +295,32 @@ def main(argv=None):
     )
     parser.add_argument("--sim-freq", type=int, choices=(2400, 4800), default=2400)
     parser.add_argument("--direction", choices=("+x", "-x", "+y", "-y"), default="+x")
+    parser.add_argument(
+        "--visual-mode",
+        choices=("mesh", "cylinder"),
+        default="mesh",
+    )
+    parser.add_argument(
+        "--hold-viewer-open",
+        action="store_true",
+        help=(
+            "Keep the final viewer frame open until the window is closed "
+            "manually."
+        ),
+    )
+    return parser
+
+
+def main(argv=None):
+    parser = _build_parser()
     args = parser.parse_args(argv)
-    run_viewer(args.scenario, args.sim_freq, args.direction)
+    run_viewer(
+        args.scenario,
+        args.sim_freq,
+        args.direction,
+        args.visual_mode,
+        args.hold_viewer_open,
+    )
     return 0
 
 

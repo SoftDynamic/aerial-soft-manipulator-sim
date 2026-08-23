@@ -10,6 +10,7 @@ import numpy as np
 
 from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ScaledStableSoftArmSpec,
+    ScaledStableSoftVisualSpec,
 )
 from multi_drone_mujoco.models.components.tendon_drive import (
     IdealTendonTensionSpec,
@@ -1122,6 +1123,7 @@ def _run_tendon_command_characterization(
     final_command,
     *,
     target_corner: Optional[str],
+    visual: Optional[ScaledStableSoftVisualSpec],
 ) -> ActiveTendonTrace:
     """Run the sole fixed-root active simulation loop."""
     final_command = np.asarray(final_command, dtype=float)
@@ -1142,6 +1144,7 @@ def _run_tendon_command_characterization(
         ctrl_freq=config.ctrl_freq,
         integrator=config.integrator,
         tendon_drive=drive_spec,
+        visual=visual,
     )
     model, data, manifest = fixture.model, fixture.data, fixture.manifest
     bindings = resolve_tendon_actuator_bindings(fixture)
@@ -1424,6 +1427,8 @@ def _run_tendon_command_characterization(
 
 def run_tendon_command_characterization(
     config: TendonCommandRunConfig,
+    *,
+    visual: Optional[ScaledStableSoftVisualSpec] = None,
 ) -> ActiveTendonTrace:
     """Run one fixed-root, vertical four-tendon command trajectory."""
     if not isinstance(config, TendonCommandRunConfig):
@@ -1432,11 +1437,14 @@ def run_tendon_command_characterization(
         config,
         config.final_tension_command_n,
         target_corner=None,
+        visual=visual,
     )
 
 
 def run_single_tendon_characterization(
     config: ActiveTendonRunConfig,
+    *,
+    visual: Optional[ScaledStableSoftVisualSpec] = None,
 ) -> ActiveTendonTrace:
     """Run the backward-compatible single-tendon active trajectory."""
     if not isinstance(config, ActiveTendonRunConfig):
@@ -1447,4 +1455,5 @@ def run_single_tendon_characterization(
         config,
         final_command,
         target_corner=config.corner,
+        visual=visual,
     )
