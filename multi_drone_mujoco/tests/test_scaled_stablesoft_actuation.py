@@ -15,6 +15,10 @@ from multi_drone_mujoco.models.components.tendon_drive import (
     build_ideal_tendon_tension_actuator_xml,
     validate_ideal_tendon_tension_command,
 )
+from multi_drone_mujoco.tests._scaled_stablesoft_actuation import (
+    resolve_tendon_actuator_bindings,
+    write_tension_command,
+)
 from multi_drone_mujoco.tests._scaled_stablesoft_dynamics import (
     MOUNT_Z,
     build_fixed_arm_fixture,
@@ -65,50 +69,11 @@ def _name_id(model, object_type, name):
 
 
 def _actuator_bindings(fixture):
-    model = fixture.model
-    bindings = []
-    for tendon_name, actuator_name in zip(
-        fixture.manifest.tendon_names,
-        fixture.manifest.tendon_actuator_names,
-    ):
-        tendon_id = _name_id(
-            model,
-            mujoco.mjtObj.mjOBJ_TENDON,
-            tendon_name,
-        )
-        actuator_id = _name_id(
-            model,
-            mujoco.mjtObj.mjOBJ_ACTUATOR,
-            actuator_name,
-        )
-        assert int(model.actuator_ctrlnum[actuator_id]) == 1
-        assert int(model.actuator_outnum[actuator_id]) == 1
-        bindings.append(
-            {
-                "tendon_name": tendon_name,
-                "actuator_name": actuator_name,
-                "tendon_id": tendon_id,
-                "actuator_id": actuator_id,
-                "control_address": int(
-                    model.actuator_ctrladr[actuator_id]
-                ),
-                "output_address": int(
-                    model.actuator_outadr[actuator_id]
-                ),
-            }
-        )
-    return tuple(bindings)
+    return resolve_tendon_actuator_bindings(fixture)
 
 
 def _write_tension_command(fixture, command):
-    values = validate_ideal_tendon_tension_command(
-        command,
-        _drive_spec(),
-    )
-    bindings = _actuator_bindings(fixture)
-    for value, binding in zip(values, bindings):
-        fixture.data.ctrl[binding["control_address"]] = value
-    return values, bindings
+    return write_tension_command(fixture, command, _drive_spec())
 
 
 def _warning_count(data):
@@ -342,21 +307,19 @@ def test_active_fixture_compiles_named_one_to_one_tendon_transmissions():
             f"_{corner}_ideal_tension_actuator"
         )
     assert tuple(
-        binding["actuator_id"] for binding in bindings
-    ) == tuple(sorted(binding["actuator_id"] for binding in bindings))
+        binding.actuator_id for binding in bindings
+    ) == tuple(sorted(binding.actuator_id for binding in bindings))
     assert tuple(
-        binding["control_address"] for binding in bindings
-    ) == tuple(sorted(binding["control_address"] for binding in bindings))
+        binding.control_address for binding in bindings
+    ) == tuple(sorted(binding.control_address for binding in bindings))
 
     for binding in bindings:
-        actuator_id = binding["actuator_id"]
+        actuator_id = binding.actuator_id
         assert (
             model.actuator_trntype[actuator_id]
             == mujoco.mjtTrn.mjTRN_TENDON
         )
-        assert int(model.actuator_trnid[actuator_id, 0]) == binding[
-            "tendon_id"
-        ]
+        assert int(model.actuator_trnid[actuator_id, 0]) == binding.tendon_id
         assert int(model.actuator_trnid[actuator_id, 1]) == -1
         np.testing.assert_allclose(
             model.actuator_gear[actuator_id],
@@ -400,7 +363,7 @@ def test_valid_tension_command_is_direct_actuator_force():
     )
     mujoco.mj_forward(fixture.model, fixture.data)
     force = tuple(
-        float(fixture.data.actuator_force[binding["output_address"]])
+        float(fixture.data.actuator_force[binding.output_address])
         for binding in bindings
     )
 
@@ -454,11 +417,11 @@ def test_tendon_transmission_sign_moment_and_power_identities():
     mujoco.mj_forward(model, data)
 
     tendon_ids = np.asarray(
-        [binding["tendon_id"] for binding in bindings],
+        [binding.tendon_id for binding in bindings],
         dtype=int,
     )
     output_addresses = np.asarray(
-        [binding["output_address"] for binding in bindings],
+        [binding.output_address for binding in bindings],
         dtype=int,
     )
     actuator_length = np.asarray(data.actuator_length)[output_addresses]
