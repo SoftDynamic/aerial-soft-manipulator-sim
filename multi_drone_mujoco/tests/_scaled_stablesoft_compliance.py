@@ -234,6 +234,103 @@ class _ExternalAccumulator:
     maximum_abs_applied_force_n: float = 0.0
 
 
+def apply_tip_force_and_check(
+    fixture,
+    tip_site_id,
+    tip_body_id,
+    force_world_n,
+    accumulator,
+    *,
+    jacp,
+    jacr,
+    fail,
+):
+    """Apply one world-frame tip force and validate its power identity.
+
+    This is a test-only primitive shared by the static compliance and
+    disturbance-recovery runners.  It deliberately owns clearing the two
+    MuJoCo external-force arrays so a zero-force call is an exact release.
+    """
+    model, data = fixture.model, fixture.data
+    force = np.asarray(force_world_n, dtype=float)
+    if force.shape != (3,):
+        raise ValueError("force_world_n must contain three values")
+
+    data.qfrc_applied[:] = 0.0
+    data.xfrc_applied[:] = 0.0
+    mujoco.mj_forward(model, data)
+    point = np.asarray(data.site_xpos[tip_site_id]).copy()
+    mujoco.mj_applyFT(
+        model,
+        data,
+        force,
+        np.zeros(3),
+        point,
+        tip_body_id,
+        data.qfrc_applied,
+    )
+    mujoco.mj_forward(model, data)
+    mujoco.mj_jacSite(model, data, jacp, jacr, tip_site_id)
+    tip_velocity = jacp @ data.qvel
+    expected_qfrc = jacp.T @ force
+    generalized_force_residual = float(
+        np.max(np.abs(data.qfrc_applied - expected_qfrc))
+    )
+    force_scale = max(
+        1.0,
+        float(np.max(np.abs(data.qfrc_applied))),
+        float(np.max(np.abs(expected_qfrc))),
+    )
+    if generalized_force_residual > 1e-12 + 1e-10 * force_scale:
+        fail("tip_generalized_force_residual", generalized_force_residual)
+
+    external_generalized_power = float(data.qfrc_applied @ data.qvel)
+    external_tip_power = float(force @ tip_velocity)
+    power_residual = abs(external_generalized_power - external_tip_power)
+    power_scale = max(
+        1e-12,
+        abs(external_generalized_power),
+        abs(external_tip_power),
+    )
+    if power_residual > 1e-12 + 1e-9 * power_scale:
+        fail("external_power_residual_w", power_residual)
+
+    if not all(
+        np.all(np.isfinite(values))
+        for values in (
+            force,
+            point,
+            tip_velocity,
+            data.qfrc_applied,
+        )
+    ):
+        fail("finite_external_force_state", False)
+
+    accumulator.maximum_generalized_force_residual = max(
+        accumulator.maximum_generalized_force_residual,
+        generalized_force_residual,
+    )
+    accumulator.maximum_power_residual_w = max(
+        accumulator.maximum_power_residual_w,
+        power_residual,
+    )
+    accumulator.maximum_abs_external_power_w = max(
+        accumulator.maximum_abs_external_power_w,
+        abs(external_generalized_power),
+    )
+    accumulator.maximum_abs_applied_force_n = max(
+        accumulator.maximum_abs_applied_force_n,
+        float(np.max(np.abs(force))),
+    )
+    return {
+        "force": force.copy(),
+        "point": point,
+        "tip_velocity": tip_velocity.copy(),
+        "external_generalized_power": external_generalized_power,
+        "external_tip_power": external_tip_power,
+    }
+
+
 @dataclass(frozen=True)
 class CommonModeComplianceTrace:
     """Read-only control-rate trace with physics-rate safety extrema."""
@@ -538,25 +635,27 @@ def run_common_mode_compliance(config: CommonModeComplianceRunConfig):
     def prepare(control_tick, physics_step, *, record):
         expected_time = control_tick / config.ctrl_freq if record else data.time
         command, force = _command_and_force(config, control_tick)
-        data.qfrc_applied[:] = 0.0
-        data.xfrc_applied[:] = 0.0
         written, current_bindings = write_tension_command(
             fixture, command, drive, bindings=bindings
         )
         if current_bindings != bindings:
             raise AssertionError("actuator binding changed during run")
-        mujoco.mj_forward(model, data)
-        point = np.asarray(data.site_xpos[tip_id]).copy()
-        mujoco.mj_applyFT(
-            model,
-            data,
-            np.asarray(force),
-            np.zeros(3),
-            point,
+        external = apply_tip_force_and_check(
+            fixture,
+            tip_id,
             tip_body_id,
-            data.qfrc_applied,
+            force,
+            external_accumulator,
+            jacp=jacp,
+            jacr=jacr,
+            fail=lambda field, value: fail(
+                "force_forward",
+                control_tick,
+                physics_step,
+                field,
+                value,
+            ),
         )
-        mujoco.mj_forward(model, data)
         warning_latch.snapshot(
             data, stage="force_forward", step_index=physics_step
         )
@@ -592,71 +691,9 @@ def run_common_mode_compliance(config: CommonModeComplianceRunConfig):
             control_tick=control_tick,
             physics_step=physics_step,
         )
-        mujoco.mj_jacSite(model, data, jacp, jacr, tip_id)
-        tip_velocity = jacp @ data.qvel
-        expected_qfrc = jacp.T @ np.asarray(force)
-        generalized_force_residual = float(
-            np.max(np.abs(data.qfrc_applied - expected_qfrc))
-        )
-        force_scale = max(
-            1.0,
-            float(np.max(np.abs(data.qfrc_applied))),
-            float(np.max(np.abs(expected_qfrc))),
-        )
-        if generalized_force_residual > 1e-12 + 1e-10 * force_scale:
-            fail(
-                "force_forward",
-                control_tick,
-                physics_step,
-                "tip_generalized_force_residual",
-                generalized_force_residual,
-            )
-        external_generalized_power = float(data.qfrc_applied @ data.qvel)
-        external_tip_power = float(np.asarray(force) @ tip_velocity)
-        power_residual = abs(external_generalized_power - external_tip_power)
-        power_scale = max(
-            1e-12, abs(external_generalized_power), abs(external_tip_power)
-        )
-        if power_residual > 1e-12 + 1e-9 * power_scale:
-            fail(
-                "force_forward",
-                control_tick,
-                physics_step,
-                "external_power_residual_w",
-                power_residual,
-            )
-        finite_external = (
-            np.all(np.isfinite(force))
-            and np.all(np.isfinite(point))
-            and np.all(np.isfinite(tip_velocity))
-            and np.all(np.isfinite(data.qfrc_applied))
-        )
-        if not finite_external:
-            fail(
-                "force_forward",
-                control_tick,
-                physics_step,
-                "finite_external_force_state",
-                False,
-            )
-        external_accumulator.maximum_generalized_force_residual = max(
-            external_accumulator.maximum_generalized_force_residual,
-            generalized_force_residual,
-        )
-        external_accumulator.maximum_power_residual_w = max(
-            external_accumulator.maximum_power_residual_w, power_residual
-        )
-        external_accumulator.maximum_abs_external_power_w = max(
-            external_accumulator.maximum_abs_external_power_w,
-            abs(external_generalized_power),
-        )
         external_accumulator.maximum_abs_actuator_power_w = max(
             external_accumulator.maximum_abs_actuator_power_w,
             abs(synchronized["generalized_power"]),
-        )
-        external_accumulator.maximum_abs_applied_force_n = max(
-            external_accumulator.maximum_abs_applied_force_n,
-            float(np.max(np.abs(force))),
         )
         if not record:
             return
@@ -668,12 +705,12 @@ def run_common_mode_compliance(config: CommonModeComplianceRunConfig):
                 "time": float(data.time),
                 "command": np.asarray(written).copy(),
                 "actuator_force": synchronized["actuator_force"],
-                "force": np.asarray(force).copy(),
-                "point": point,
+                "force": external["force"],
+                "point": external["point"],
                 "qfrc_applied": np.asarray(data.qfrc_applied).copy(),
                 "root": np.asarray(data.site_xpos[root_id]).copy(),
                 "tip": synchronized["tip"],
-                "tip_velocity": tip_velocity.copy(),
+                "tip_velocity": external["tip_velocity"],
                 "qpos": np.asarray(data.qpos).copy(),
                 "qvel": np.asarray(data.qvel).copy(),
                 "qacc": np.asarray(data.qacc).copy(),
@@ -687,8 +724,10 @@ def run_common_mode_compliance(config: CommonModeComplianceRunConfig):
                 "actuator_power": synchronized["actuator_power"],
                 "tendon_power": synchronized["tendon_power"],
                 "command_tendon_power": synchronized["command_tendon_power"],
-                "external_generalized_power": external_generalized_power,
-                "external_tip_power": external_tip_power,
+                "external_generalized_power": external[
+                    "external_generalized_power"
+                ],
+                "external_tip_power": external["external_tip_power"],
                 "warning_counts": _warning_counts(data),
                 "contacts": int(data.ncon),
                 "margins": synchronized["margins"],
