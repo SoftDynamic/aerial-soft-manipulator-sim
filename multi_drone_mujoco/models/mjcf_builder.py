@@ -1,6 +1,7 @@
 """MJCF construction for drone aviary models."""
 
 import os
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
@@ -11,9 +12,13 @@ from multi_drone_mujoco.models.components.passive_arm import (
     build_passive_arm_xml,
 )
 from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
+    ArmMjcfManifest,
     ScaledStableSoftArmSpec,
     ScaledStableSoftVisualSpec,
     build_scaled_stablesoft_arm_mjcf,
+)
+from multi_drone_mujoco.models.components.tendon_drive import (
+    IdealTendonTensionSpec,
 )
 from multi_drone_mujoco.models.parameters import (
     CF2X_3G_PAYLOAD_PARAMS,
@@ -31,7 +36,15 @@ CF2_MESH_DIR = Path(os.environ.get("MJ_DRONES_CF2_ASSETS",
                                    str(ASSETS_PATH / "cf2")))
 
 
-def build_aviary_xml(
+@dataclass(frozen=True)
+class AviaryMjcfBuild:
+    """XML and manifests emitted by one production MJCF build."""
+
+    xml: str
+    scaled_stablesoft_arm_manifest: Optional[ArmMjcfManifest]
+
+
+def build_aviary_mjcf(
     num_drones: int,
     drone_model: DroneModel,
     init_xyzs: np.ndarray,
@@ -44,8 +57,11 @@ def build_aviary_xml(
     passive_arm: Optional[PassiveArmSpec] = None,
     scaled_stablesoft_arm: Optional[ScaledStableSoftArmSpec] = None,
     scaled_stablesoft_visual: Optional[ScaledStableSoftVisualSpec] = None,
-) -> str:
-    """Generate MuJoCo XML for the aviary with N drones."""
+    scaled_stablesoft_tendon_drive: Optional[
+        IdealTendonTensionSpec
+    ] = None,
+) -> AviaryMjcfBuild:
+    """Generate XML and manifests for an aviary in one build pass."""
     if not isinstance(integrator, str):
         raise ValueError("integrator must be a string")
     if not integrator:
@@ -64,6 +80,14 @@ def build_aviary_xml(
     ):
         raise ValueError(
             "A scaled StableSoft visual requires a scaled StableSoft arm"
+        )
+    if (
+        scaled_stablesoft_tendon_drive is not None
+        and scaled_stablesoft_arm is None
+    ):
+        raise ValueError(
+            "A scaled StableSoft tendon drive requires a scaled "
+            "StableSoft arm"
         )
     if passive_arm is not None:
         if drone_model != DroneModel.CF2X:
@@ -109,6 +133,7 @@ def build_aviary_xml(
     sensors = ""
     tendons = ""
     arm_assets = ""
+    scaled_stablesoft_arm_manifest = None
 
     for d in range(num_drones):
         x, y, z = init_xyzs[d]
@@ -193,8 +218,10 @@ def build_aviary_xml(
                 prefix,
                 scaled_stablesoft_arm,
                 mount_z,
+                tendon_drive=scaled_stablesoft_tendon_drive,
                 visual=scaled_stablesoft_visual,
             )
+            scaled_stablesoft_arm_manifest = arm_fragments.manifest
             if arm_fragments.asset_xml:
                 arm_assets += "\n" + arm_fragments.asset_xml
             drone_bodies += arm_fragments.worldbody_xml
@@ -293,4 +320,44 @@ def build_aviary_xml(
   </sensor>
 </mujoco>
 """
-    return xml
+    return AviaryMjcfBuild(
+        xml=xml,
+        scaled_stablesoft_arm_manifest=scaled_stablesoft_arm_manifest,
+    )
+
+
+def build_aviary_xml(
+    num_drones: int,
+    drone_model: DroneModel,
+    init_xyzs: np.ndarray,
+    init_rpys: np.ndarray,
+    obstacles: bool = False,
+    vision: bool = False,
+    timestep: float = 1 / 240,
+    integrator: str = "RK4",
+    enable_3g_payload: bool = False,
+    passive_arm: Optional[PassiveArmSpec] = None,
+    scaled_stablesoft_arm: Optional[ScaledStableSoftArmSpec] = None,
+    scaled_stablesoft_visual: Optional[ScaledStableSoftVisualSpec] = None,
+    scaled_stablesoft_tendon_drive: Optional[
+        IdealTendonTensionSpec
+    ] = None,
+) -> str:
+    """Generate MuJoCo XML while preserving the legacy string interface."""
+    return build_aviary_mjcf(
+        num_drones=num_drones,
+        drone_model=drone_model,
+        init_xyzs=init_xyzs,
+        init_rpys=init_rpys,
+        obstacles=obstacles,
+        vision=vision,
+        timestep=timestep,
+        integrator=integrator,
+        enable_3g_payload=enable_3g_payload,
+        passive_arm=passive_arm,
+        scaled_stablesoft_arm=scaled_stablesoft_arm,
+        scaled_stablesoft_visual=scaled_stablesoft_visual,
+        scaled_stablesoft_tendon_drive=(
+            scaled_stablesoft_tendon_drive
+        ),
+    ).xml

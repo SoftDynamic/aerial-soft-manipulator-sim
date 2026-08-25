@@ -8,13 +8,17 @@ from typing import Optional, Tuple, Union
 import mujoco
 import numpy as np
 
+from multi_drone_mujoco.control.ideal_tendon_tension import (
+    IdealTendonActuatorBinding,
+    resolve_ideal_tendon_actuator_bindings,
+    write_ideal_tendon_tension_command,
+)
 from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ScaledStableSoftArmSpec,
     ScaledStableSoftVisualSpec,
 )
 from multi_drone_mujoco.models.components.tendon_drive import (
     IdealTendonTensionSpec,
-    validate_ideal_tendon_tension_command,
 )
 from multi_drone_mujoco.tests._scaled_stablesoft_dynamics import (
     WarningEvent,
@@ -144,16 +148,7 @@ def _normalize_active_run_grid(config: _ActiveRunGrid) -> None:
     )
 
 
-@dataclass(frozen=True)
-class TendonActuatorBinding:
-    """One manifest-resolved tendon actuator and its storage addresses."""
-
-    tendon_name: str
-    actuator_name: str
-    tendon_id: int
-    actuator_id: int
-    control_address: int
-    output_address: int
+TendonActuatorBinding = IdealTendonActuatorBinding
 
 
 @dataclass(frozen=True)
@@ -424,53 +419,24 @@ def _named_id(model, object_type, name: str) -> int:
 
 
 def resolve_tendon_actuator_bindings(fixture):
-    """Resolve manifest order without treating actuator IDs as addresses."""
-    model = fixture.model
-    tendon_names = tuple(fixture.manifest.tendon_names)
-    actuator_names = tuple(fixture.manifest.tendon_actuator_names)
-    if len(tendon_names) != len(actuator_names):
-        raise AssertionError("tendon and actuator manifest lengths differ")
-
-    bindings = []
-    for tendon_name, actuator_name in zip(tendon_names, actuator_names):
-        tendon_id = _named_id(
-            model,
-            mujoco.mjtObj.mjOBJ_TENDON,
-            tendon_name,
-        )
-        actuator_id = _named_id(
-            model,
-            mujoco.mjtObj.mjOBJ_ACTUATOR,
-            actuator_name,
-        )
-        if int(model.actuator_ctrlnum[actuator_id]) != 1:
-            raise AssertionError(f"{actuator_name} must have one control")
-        if int(model.actuator_outnum[actuator_id]) != 1:
-            raise AssertionError(f"{actuator_name} must have one output")
-        bindings.append(
-            TendonActuatorBinding(
-                tendon_name=tendon_name,
-                actuator_name=actuator_name,
-                tendon_id=tendon_id,
-                actuator_id=actuator_id,
-                control_address=int(model.actuator_ctrladr[actuator_id]),
-                output_address=int(model.actuator_outadr[actuator_id]),
-            )
-        )
-    return tuple(bindings)
+    """Compatibility wrapper around the production runtime resolver."""
+    return resolve_ideal_tendon_actuator_bindings(
+        fixture.model,
+        fixture.manifest,
+    )
 
 
 def write_tension_command(fixture, command, drive_spec, *, bindings=None):
-    """Validate newtons and write each value through its control address."""
-    values = validate_ideal_tendon_tension_command(command, drive_spec)
+    """Compatibility wrapper around the production runtime writer."""
     if bindings is None:
         bindings = resolve_tendon_actuator_bindings(fixture)
-    else:
-        bindings = tuple(bindings)
-    if len(values) != len(bindings):
-        raise AssertionError("command and actuator binding lengths differ")
-    for value, binding in zip(values, bindings):
-        fixture.data.ctrl[binding.control_address] = value
+    bindings = tuple(bindings)
+    values = write_ideal_tendon_tension_command(
+        fixture.data,
+        bindings,
+        command,
+        drive_spec,
+    )
     return values, bindings
 
 

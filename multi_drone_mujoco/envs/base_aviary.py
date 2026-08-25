@@ -16,12 +16,19 @@ import mujoco.viewer
 import numpy as np
 from gymnasium import spaces
 
+from multi_drone_mujoco.control.ideal_tendon_tension import (
+    resolve_ideal_tendon_actuator_bindings,
+    write_ideal_tendon_tension_command,
+)
 from multi_drone_mujoco.models.components.passive_arm import PassiveArmSpec
 from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ScaledStableSoftArmSpec,
     ScaledStableSoftVisualSpec,
 )
-from multi_drone_mujoco.models.mjcf_builder import build_aviary_xml
+from multi_drone_mujoco.models.components.tendon_drive import (
+    IdealTendonTensionSpec,
+)
+from multi_drone_mujoco.models.mjcf_builder import build_aviary_mjcf
 from multi_drone_mujoco.models.parameters import (
     CF2X_3G_PAYLOAD_PARAMS,
     DRONE_PARAMS,
@@ -68,6 +75,9 @@ class BaseAviary(gym.Env):
         passive_arm: Optional[PassiveArmSpec] = None,
         scaled_stablesoft_arm: Optional[ScaledStableSoftArmSpec] = None,
         scaled_stablesoft_visual: Optional[ScaledStableSoftVisualSpec] = None,
+        scaled_stablesoft_tendon_drive: Optional[
+            IdealTendonTensionSpec
+        ] = None,
         integrator: str = "RK4",
     ):
         """Initialize the aviary.
@@ -118,6 +128,9 @@ class BaseAviary(gym.Env):
         scaled_stablesoft_visual : ScaledStableSoftVisualSpec, optional
             Select mesh or cylinder display geometry for the scaled
             StableSoft arm. The default is mesh.
+        scaled_stablesoft_tendon_drive : IdealTendonTensionSpec, optional
+            Add four ideal direct-tension actuators without changing the
+            rotor-RPM action interface.
         integrator : str
             MuJoCo integrator name passed unchanged to the MJCF builder.
         """
@@ -133,6 +146,25 @@ class BaseAviary(gym.Env):
         ):
             raise ValueError(
                 "A scaled StableSoft visual requires a scaled StableSoft arm"
+            )
+        if (
+            scaled_stablesoft_tendon_drive is not None
+            and scaled_stablesoft_arm is None
+        ):
+            raise ValueError(
+                "A scaled StableSoft tendon drive requires a scaled "
+                "StableSoft arm"
+            )
+        if (
+            scaled_stablesoft_tendon_drive is not None
+            and not isinstance(
+                scaled_stablesoft_tendon_drive,
+                IdealTendonTensionSpec,
+            )
+        ):
+            raise TypeError(
+                "scaled_stablesoft_tendon_drive must be an "
+                "IdealTendonTensionSpec"
             )
 
         if enable_3g_payload:
@@ -210,6 +242,9 @@ class BaseAviary(gym.Env):
         self.PASSIVE_ARM_SPEC = passive_arm
         self.SCALED_STABLESOFT_ARM_SPEC = scaled_stablesoft_arm
         self.SCALED_STABLESOFT_VISUAL_SPEC = scaled_stablesoft_visual
+        self.SCALED_STABLESOFT_TENDON_DRIVE_SPEC = (
+            scaled_stablesoft_tendon_drive
+        )
         self.INTEGRATOR = integrator
 
         # Load drone parameters
@@ -282,7 +317,7 @@ class BaseAviary(gym.Env):
             self.INIT_RPYS = np.array(initial_rpys).reshape(num_drones, 3)
 
         # Generate and load MuJoCo model
-        self._generated_xml = build_aviary_xml(
+        mjcf_build = build_aviary_mjcf(
             num_drones=num_drones,
             drone_model=drone_model,
             init_xyzs=self.INIT_XYZS,
@@ -295,9 +330,32 @@ class BaseAviary(gym.Env):
             passive_arm=passive_arm,
             scaled_stablesoft_arm=scaled_stablesoft_arm,
             scaled_stablesoft_visual=scaled_stablesoft_visual,
+            scaled_stablesoft_tendon_drive=(
+                scaled_stablesoft_tendon_drive
+            ),
+        )
+        self._generated_xml = mjcf_build.xml
+        self.SCALED_STABLESOFT_ARM_MANIFEST = (
+            mjcf_build.scaled_stablesoft_arm_manifest
         )
         self.model = mujoco.MjModel.from_xml_string(self._generated_xml)
         self.data = mujoco.MjData(self.model)
+        if scaled_stablesoft_tendon_drive is None:
+            self.SCALED_STABLESOFT_TENDON_BINDINGS = ()
+        else:
+            if self.SCALED_STABLESOFT_ARM_MANIFEST is None:
+                raise AssertionError(
+                    "Active scaled StableSoft build has no manifest"
+                )
+            self.SCALED_STABLESOFT_TENDON_BINDINGS = (
+                resolve_ideal_tendon_actuator_bindings(
+                    self.model,
+                    self.SCALED_STABLESOFT_ARM_MANIFEST,
+                )
+            )
+        self._scaled_stablesoft_tension_command_n = (
+            0.0,
+        ) * len(self.SCALED_STABLESOFT_TENDON_BINDINGS)
 
         # Vision attributes
         if self.VISION_ATTR:
@@ -353,6 +411,25 @@ class BaseAviary(gym.Env):
         output_path.write_text(self._generated_xml, encoding="utf-8")
         return output_path
 
+    def set_scaled_stablesoft_tension_command(
+        self,
+        tendon_tension_cmd_n,
+    ):
+        """Set four tendon tensions in newtons, separately from RPM action."""
+        drive = self.SCALED_STABLESOFT_TENDON_DRIVE_SPEC
+        if drive is None:
+            raise RuntimeError(
+                "The scaled StableSoft ideal tendon drive is not enabled"
+            )
+        values = write_ideal_tendon_tension_command(
+            self.data,
+            self.SCALED_STABLESOFT_TENDON_BINDINGS,
+            tendon_tension_cmd_n,
+            drive,
+        )
+        self._scaled_stablesoft_tension_command_n = values
+        return values
+
     ############################################################################
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
@@ -360,6 +437,18 @@ class BaseAviary(gym.Env):
         super().reset(seed=seed)
 
         mujoco.mj_resetData(self.model, self.data)
+        if self.SCALED_STABLESOFT_TENDON_DRIVE_SPEC is not None:
+            zeros = (0.0,) * len(
+                self.SCALED_STABLESOFT_TENDON_BINDINGS
+            )
+            self._scaled_stablesoft_tension_command_n = (
+                write_ideal_tendon_tension_command(
+                    self.data,
+                    self.SCALED_STABLESOFT_TENDON_BINDINGS,
+                    zeros,
+                    self.SCALED_STABLESOFT_TENDON_DRIVE_SPEC,
+                )
+            )
 
         # Set initial states
         for i in range(self.NUM_DRONES):
