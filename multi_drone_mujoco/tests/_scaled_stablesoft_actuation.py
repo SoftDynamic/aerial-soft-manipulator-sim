@@ -546,15 +546,26 @@ def _range_tolerance(lower, upper, length) -> float:
     return max(1e-9, 1e-8 * scale)
 
 
-def _synchronized_values(
-    fixture,
-    bindings,
-    addresses,
-    tip_id,
-    tendon_ranges,
-    command,
-):
-    model, data = fixture.model, fixture.data
+@dataclass(frozen=True)
+class IdealTendonTransmissionSample:
+    """Synchronized transmission quantities shared by active test rigs."""
+
+    tendon_length: np.ndarray
+    tendon_velocity: np.ndarray
+    actuator_length: np.ndarray
+    actuator_velocity: np.ndarray
+    actuator_force: np.ndarray
+    expected_qfrc: np.ndarray
+    generalized_power: float
+    actuator_power: float
+    tendon_power: float
+    command_tendon_power: float
+
+
+def sample_ideal_tendon_transmission(model, data, bindings, command):
+    """Sample ideal-tendon moment and power identities after ``mj_forward``."""
+    bindings = tuple(bindings)
+    command = np.asarray(command, dtype=float)
     tendon_ids = np.asarray(
         [binding.tendon_id for binding in bindings],
         dtype=int,
@@ -563,6 +574,9 @@ def _synchronized_values(
         [binding.output_address for binding in bindings],
         dtype=int,
     )
+    if command.shape != (len(bindings),):
+        raise ValueError("command shape must match tendon bindings")
+
     tendon_length = np.asarray(data.ten_length)[tendon_ids].copy()
     tendon_velocity = np.asarray(data.ten_velocity)[tendon_ids].copy()
     actuator_length = np.asarray(data.actuator_length)[
@@ -574,8 +588,6 @@ def _synchronized_values(
     actuator_force = np.asarray(data.actuator_force)[
         output_addresses
     ].copy()
-    joints = joint_rotation_vectors(model, data, addresses)
-    composite = composite_rotation_vector(model, data, addresses)
     actuator_moment = np.asarray(data.actuator_moment).reshape(
         model.nout,
         model.nv,
@@ -584,25 +596,56 @@ def _synchronized_values(
     generalized_power = float(data.qfrc_actuator @ data.qvel)
     actuator_power = float(actuator_force @ actuator_velocity)
     tendon_power = float(-actuator_force @ tendon_velocity)
-    command_tendon_power = float(-np.asarray(command) @ tendon_velocity)
+    command_tendon_power = float(-command @ tendon_velocity)
+    return IdealTendonTransmissionSample(
+        tendon_length=tendon_length,
+        tendon_velocity=tendon_velocity,
+        actuator_length=actuator_length,
+        actuator_velocity=actuator_velocity,
+        actuator_force=actuator_force,
+        expected_qfrc=expected_qfrc,
+        generalized_power=generalized_power,
+        actuator_power=actuator_power,
+        tendon_power=tendon_power,
+        command_tendon_power=command_tendon_power,
+    )
+
+
+def _synchronized_values(
+    fixture,
+    bindings,
+    addresses,
+    tip_id,
+    tendon_ranges,
+    command,
+):
+    model, data = fixture.model, fixture.data
+    transmission = sample_ideal_tendon_transmission(
+        model,
+        data,
+        bindings,
+        command,
+    )
+    joints = joint_rotation_vectors(model, data, addresses)
+    composite = composite_rotation_vector(model, data, addresses)
     margins = np.minimum(
-        tendon_length - tendon_ranges[:, 0],
-        tendon_ranges[:, 1] - tendon_length,
+        transmission.tendon_length - tendon_ranges[:, 0],
+        tendon_ranges[:, 1] - transmission.tendon_length,
     )
     return {
-        "tendon_length": tendon_length,
-        "tendon_velocity": tendon_velocity,
-        "actuator_length": actuator_length,
-        "actuator_velocity": actuator_velocity,
-        "actuator_force": actuator_force,
+        "tendon_length": transmission.tendon_length,
+        "tendon_velocity": transmission.tendon_velocity,
+        "actuator_length": transmission.actuator_length,
+        "actuator_velocity": transmission.actuator_velocity,
+        "actuator_force": transmission.actuator_force,
         "joints": joints,
         "composite": composite,
         "tip": np.asarray(data.site_xpos[tip_id]).copy(),
-        "expected_qfrc": expected_qfrc,
-        "generalized_power": generalized_power,
-        "actuator_power": actuator_power,
-        "tendon_power": tendon_power,
-        "command_tendon_power": command_tendon_power,
+        "expected_qfrc": transmission.expected_qfrc,
+        "generalized_power": transmission.generalized_power,
+        "actuator_power": transmission.actuator_power,
+        "tendon_power": transmission.tendon_power,
+        "command_tendon_power": transmission.command_tendon_power,
         "margins": margins,
     }
 
