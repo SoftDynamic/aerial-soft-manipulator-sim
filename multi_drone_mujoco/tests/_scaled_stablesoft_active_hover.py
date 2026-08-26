@@ -382,12 +382,25 @@ def _binding_by_corner(bindings):
     return MappingProxyType(result)
 
 
-def _command_at_tick(config, bindings_by_corner, tick):
+def _validated_active_corners(active_corners):
+    try:
+        corners = tuple(active_corners)
+    except TypeError as exc:
+        raise ValueError("active_corners must be an iterable of corner names") from exc
+    invalid = tuple(corner for corner in corners if corner not in CORNERS)
+    if invalid:
+        raise ValueError(f"unknown active tendon corners: {invalid}")
+    if len(corners) != len(set(corners)):
+        raise ValueError(f"active tendon corners must be unique: {corners}")
+    return corners
+
+
+def _command_at_tick(config, bindings_by_corner, tick, active_corners):
     if tick >= RELEASE_TICK:
         scale = 0.0
     else:
         scale = half_cosine_ramp_scale_at_tick(tick, RAMP_TICKS)
-    active = set(CASE_CORNERS[config.case])
+    active = set(active_corners)
     by_actuator = {
         binding.actuator_id: config.tension_n * scale
         if corner in active
@@ -1017,10 +1030,11 @@ def _safety_accumulator():
     }
 
 
-def run_c1_b3(config, baseline=None):
-    """Run one C1-B3 trajectory and optionally attach baseline-relative data."""
+def _run_active_hover(config, active_corners, baseline=None):
+    """Run one active-hover trajectory for explicit manifest corner names."""
     if not isinstance(config, C1B3RunConfig):
-        raise TypeError("config must be C1B3RunConfig")
+        raise TypeError("config must derive from C1B3RunConfig")
+    active_corners = _validated_active_corners(active_corners)
     if baseline is not None:
         if baseline.config.sim_freq != config.sim_freq:
             raise ValueError("baseline frequency must match active trace")
@@ -1056,7 +1070,9 @@ def run_c1_b3(config, baseline=None):
 
         env.reset()
         data.qvel[:] = 0.0
-        command0 = _command_at_tick(config, bindings_by_corner, 0)
+        command0 = _command_at_tick(
+            config, bindings_by_corner, 0, active_corners
+        )
         env.set_scaled_stablesoft_tension_command(command0)
         rpm = np.full(4, env.HOVER_RPM)
         env._physics(rpm, 0)
@@ -1144,7 +1160,9 @@ def run_c1_b3(config, baseline=None):
 
         try:
             for tick in range(TOTAL_CONTROL_TICKS + 1):
-                command = _command_at_tick(config, bindings_by_corner, tick)
+                command = _command_at_tick(
+                    config, bindings_by_corner, tick, active_corners
+                )
                 written = env.set_scaled_stablesoft_tension_command(command)
                 if written != command:
                     raise AssertionError(
@@ -1349,6 +1367,17 @@ def run_c1_b3(config, baseline=None):
     finally:
         if env is not None:
             env.close()
+
+
+def run_c1_b3(config, baseline=None):
+    """Run one C1-B3 trajectory and optionally attach baseline-relative data."""
+    if not isinstance(config, C1B3RunConfig):
+        raise TypeError("config must be C1B3RunConfig")
+    return _run_active_hover(
+        config,
+        CASE_CORNERS[config.case],
+        baseline=baseline,
+    )
 
 
 def run_manual_tension_diagnostic(sim_freq, tension_n):
