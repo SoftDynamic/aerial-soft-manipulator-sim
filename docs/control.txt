@@ -156,3 +156,200 @@ tension was 3.03 mN, no allocator saturation/fault, warning, or contact was
 observed, cross-axis response was below 1e-12 m, and the maximum cross-rate
 transient q difference was 0.101 um.  These values are regression contracts
 for this validity envelope, not a claim of zero steady-state error.
+
+
+Gate C2 final: calibrated static feedforward and free-UAV validation
+====================================================================
+
+Final controller preset
+-----------------------
+
+``scaled_stablesoft_bending_controller_config()`` and
+``make_scaled_stablesoft_bending_controller(tendon_names)`` freeze the final
+configuration.  The tendon names must come from the runtime-resolved manifest
+bindings; numeric tendon or actuator IDs are not configuration inputs.
+
+The final parameters are:
+
+    control frequency                 240 Hz
+    valid MuJoCo simulation rates     2400 and 4800 Hz
+    acceleration L1 envelope          0.04 m/s^2
+    modal velocity L1 envelope        0.002 m/s
+    modal contraction L1 envelope     0.000300 m
+    calibrated actual-q L1 envelope   0.000400 m
+    Kp                                300 N/m
+    Kd                                0.02 N*s/m
+    K_static                          diag(52.58, 52.58) N/m
+    Ki                                not present
+    allocator tension bounds          0 <= t_i <= 0.010 N
+    allocator bias/fixed preload      [0, 0, 0, 0] N
+
+The static term is
+
+    f_static = K_static q_reference.
+
+It is a calibrated equilibrium effort in the two retained tendon bending
+modes.  It is not acceleration inverse dynamics, does not use tendon mass,
+and is not a 4x4 tendon inverse.  Modal PD and static effort are summed before
+the unchanged lexicographic bounded allocator.  Setting
+``static_feedforward=None`` explicitly restores the prior PD-only computation
+path; regression tests compare that path exactly.
+
+Feedforward calibration and choice
+----------------------------------
+
+The original 100 um PD-only profile reaches the reference exactly but settles
+near 88.307 um: its approximately 11.693 um error is the equilibrium effort
+needed to balance joint elasticity/gravity at finite Kp.  The allocator is
+unsaturated with zero primary residual, cross-axis motion is negligible, and
+the reference/common/checker diagnostics are exact, so reference integration,
+allocation, coupling, and saturation are not the source of that offset.
+
+A new 3 s quasi-static matrix used 2, 5, and 10 mN commands, both signs,
+X/Y axes and diagonals, both simulation rates, and repeated runs.  The
+training mean modal stiffness was 52.5771 N/m.  All measured training and
+holdout values were 52.5205--52.6159 N/m; the 2400/4800 mean difference was
+3.97e-5 N/m, cross-axis response was zero to numerical scale, and repeats
+were bitwise identical.  This supports the rounded linear diagonal value
+52.58 N/m.  The measured variation is too small to justify a piecewise or
+higher-order model, and no integral state is needed.
+
+The final feedback gains were selected jointly with the free-UAV Gate.  The
+old 400 N/m, 0.05 N*s/m pair remains the frozen C2-C2 PD-only regression but
+is too close to the free-base discrete stability boundary.  The final
+300 N/m, 0.02 N*s/m pair retains fixed-root accuracy while avoiding saturation
+in the validated free-UAV window.
+
+Fixed-root validated workspace
+------------------------------
+
+The final preset was tested at 75, 136, 200, and 250 um reference magnitudes
+over signed X/Y axes and all represented diagonal signs.  Profiles include
+accelerate--decelerate--hold, zero-acceleration hold, direction reversal,
+projection/rejection of incompatible four-tendon inputs, sustained allocator
+saturation and release, reset, disable/re-enable, injected numerical failure,
+explicit clear, and manifest permutation.
+
+Across the formal fixed-root holdouts:
+
+    maximum absolute tail error        0.0159 um
+    maximum hold RMS error             1.812 um
+    maximum overshoot                  7.90 percent
+    maximum 2-percent settling time    0.375 s
+    maximum commanded tension          7.784 mN
+    saturation fraction                0
+    maximum allocator residual         numerical zero
+    maximum cross-axis q               below 1e-12 m
+    maximum 2400/4800 q difference     0.0332 um
+    maximum 2400/4800 tip difference   0.835 um
+
+Power is sampled from synchronized diagnostic copies so the live MuJoCo call
+sequence remains identical to the C2-C2 regression.  Generalized, actuator,
+tendon-coordinate, and command power agree to machine precision.  The tested
+work range was approximately 0.20--1.86 uJ and the maximum fixed-root energy
+ledger residual was 3.2 nJ.
+
+Ideal-tension comparison
+------------------------
+
+The 0.002, 0.005, and 0.010 N ideal-tension baselines remain unchanged and
+continue to record tendon state, tip/joint motion, actuator/generalized force,
+power, position/kinetic/total energy, warnings, contacts, and range margins.
+
+For matched final modal contractions at 0.002 and 0.005 N, the acceleration
+controller differs from the ideal-tension baseline by at most 0.0092 um in q
+and 0.426 um at the tip.  Its peak tensions are approximately 2.585 and
+5.850 mN.  The profiles have different power/work because their command
+histories differ; this comparison demonstrates similar tendon-modal and tip
+motion effects, not physical equivalence of acceleration and tension inputs.
+
+The 0.010 N ideal baselines reach approximately 381 um L1 modal contraction
+for both axis and diagonal patterns.  That is outside the controller's frozen
+300 um reference envelope.  The controller does not enlarge max_tension or
+its reference range to reproduce this boundary case.
+
+Free-UAV active coupling
+------------------------
+
+The unchanged C1-B3 gravity/open-loop-hover plant was driven by the external
+controller at 240 Hz.  Formal runs cover +/-X, +/-Y, a diagonal, 2400/4800 Hz,
+disabled compatibility, enabled hold, explicit disable, fault injection and
+clear.  A separate public-API smoke test calls ``env.step(rotor_rpm)`` with a
+four-vector while the controller writes a separate four-tension vector.
+
+The validated active free-UAV reference is 5 um with a 0.75 s active window.
+Its tail response is approximately 5.0377 um, peak tension is at most
+0.220 mN, and there is no saturation, fault, out-of-envelope diagnostic,
+warning, contact, or range violation.  The controller acceleration sequences
+are exactly equal across rates; maximum q difference is 0.0213 um and maximum
+tension difference is 0.471 uN.
+
+UAV reaction is measurable and directionally symmetric.  Positive q_x
+produces positive pitch and subsequent +X motion under the tilted equal-RPM
+rotor thrust; positive q_y produces negative roll and subsequent +Y motion.
+At 0.75 s, relative hover position and attitude errors are approximately
+2.378 mm and 5.165 mrad.  Controller tension changes with the measured free
+plant tendon state, while UAV pose changes in response to tendon force and
+moment, demonstrating two-way rather than scripted one-way coupling.
+
+Equal open-loop hover RPM is not an attitude controller.  After explicit
+tension disable, acquired lateral velocity and attitude persist: the 3 s
+relative drift is approximately 0.44 m and 0.05 rad.  This is recorded plant
+response and must not be described as stable long-duration hover.  No rotor
+controller was redesigned to hide it.
+
+External composition and lifecycle
+----------------------------------
+
+The controller is owned outside ``BaseAviary``; no environment API or RPM
+action was changed.  A typical headless loop is:
+
+    bindings = resolve_ideal_tendon_actuator_bindings(
+        env.model, env.SCALED_STABLESOFT_ARM_MANIFEST
+    )
+    tendon_ids = np.asarray([item.tendon_id for item in bindings])
+    controller = make_scaled_stablesoft_bending_controller(
+        [item.tendon_name for item in bindings]
+    )
+    controller.reset(
+        env.data.ten_length[tendon_ids],
+        env.data.ten_velocity[tendon_ids],
+    )
+    controller.enable()
+
+    tension = controller.update_bending_acceleration(
+        bending_acceleration_cmd_m_s2,
+        env.data.ten_length[tendon_ids],
+        env.data.ten_velocity[tendon_ids],
+    )
+    state = controller.state
+    env.set_scaled_stablesoft_tension_command(tension)
+    observation, reward, terminated, truncated, info = env.step(rotor_rpm)
+
+``rotor_rpm`` and ``tension`` are separate four-vectors.  The update returns
+the tension tuple for backward compatibility; complete diagnostics are read
+from ``controller.state``.
+
+Lifecycle meanings are deliberately distinct:
+
+* disabled: writes four exact zeros and does not advance the reference;
+* enabled after reset plus zero acceleration: holds the reset reference and
+  produces zero tension with zero preload;
+* enabled after a nonzero reference plus zero acceleration: continues the
+  compatible modal hold, including calibrated feedforward;
+* reset: replaces neutral lengths/reference state, clears a fault, and leaves
+  the controller disabled;
+* clear_fault: clears only the latch and preserves the current reference;
+* fault-latched: writes four exact zeros until reset or explicit clear.
+
+Scope and exclusions
+--------------------
+
+The fixed-root guarantee is vertical, gravity-on, collision-disabled,
+no-contact, and limited to the stated small-deformation envelopes.  The free
+UAV guarantee is the smaller active window above plus bounded post-release
+safety, not closed-loop hover.  A short public-step small-attitude smoke test
+is finite and contact-free, but contact tracking performance is not designed
+or claimed.  Hardware motors, spools, FOC/current loops, tendon mass,
+curvature/tip inverse kinematics, force/impedance contact control, trajectory
+generation, and a UAV attitude controller remain separate future stages.

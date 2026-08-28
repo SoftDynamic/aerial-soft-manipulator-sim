@@ -32,6 +32,11 @@ from multi_drone_mujoco.control.tendon_modal_pd import (
     BendingModalPDConfig,
     BendingModalPDState,
 )
+from multi_drone_mujoco.control.tendon_modal_static_feedforward import (
+    BendingModalStaticFeedforward,
+    BendingModalStaticFeedforwardConfig,
+    BendingModalStaticFeedforwardState,
+)
 
 
 _MAX_TENSION_N = 0.01
@@ -59,6 +64,7 @@ class TendonCompatibleAccelerationControllerConfig:
     reference: BendingReferenceConfig
     modal_pd: BendingModalPDConfig
     allocator: BoundedTendonAllocatorConfig
+    static_feedforward: BendingModalStaticFeedforwardConfig | None = None
 
     def __post_init__(self):
         if not isinstance(self.reference, BendingReferenceConfig):
@@ -67,6 +73,12 @@ class TendonCompatibleAccelerationControllerConfig:
             raise TypeError("modal_pd must be BendingModalPDConfig")
         if not isinstance(self.allocator, BoundedTendonAllocatorConfig):
             raise TypeError("allocator must be BoundedTendonAllocatorConfig")
+        if self.static_feedforward is not None and not isinstance(
+            self.static_feedforward, BendingModalStaticFeedforwardConfig
+        ):
+            raise TypeError(
+                "static_feedforward must be BendingModalStaticFeedforwardConfig or None"
+            )
         if self.allocator.max_tension_n != _MAX_TENSION_N:
             raise ValueError("allocator max_tension_n must remain exactly 0.01 N")
         if self.allocator.bias_tension_n != (0.0, 0.0, 0.0, 0.0):
@@ -93,6 +105,9 @@ class TendonCompatibleAccelerationControllerState:
     input_projection_residual_m_s2: tuple
     reference: BendingReferenceState
     modal_pd: BendingModalPDState
+    static_feedforward: BendingModalStaticFeedforwardState | None
+    desired_total_bending_effort_n: tuple
+    feedforward_out_of_envelope: bool
     allocation: BoundedTendonAllocation | None
     tension_command_n: tuple
     reference_common_residuals: tuple
@@ -122,6 +137,11 @@ class TendonCompatibleAccelerationController:
             config.reference, self.coordinates
         )
         self.modal_pd = BendingModalPD(config.modal_pd)
+        self.static_feedforward = (
+            BendingModalStaticFeedforward(config.static_feedforward)
+            if config.static_feedforward is not None
+            else None
+        )
         self.allocator = BoundedTendonAllocator(config.allocator, self.coordinates)
         self._state = None
         self._enabled = False
@@ -167,6 +187,7 @@ class TendonCompatibleAccelerationController:
         self._control_tick = 0
         reference = self.reference.reset(velocities)
         modal_pd = self._evaluate_pd(lengths, velocities, lengths, reference)
+        feedforward = self._evaluate_feedforward(modal_pd)
         allocation = self.allocator.allocate((0.0, 0.0))
         zeros = (0.0,) * 4
         self._state = self._make_state(
@@ -179,6 +200,8 @@ class TendonCompatibleAccelerationController:
             residual=zeros,
             reference=reference,
             modal_pd=modal_pd,
+            feedforward=feedforward,
+            total_effort=modal_pd.desired_bending_effort_n,
             allocation=allocation,
             command=zeros,
         )
@@ -196,6 +219,15 @@ class TendonCompatibleAccelerationController:
             actual_v,
         )
         return self.modal_pd.state
+
+    def _evaluate_feedforward(self, modal_pd):
+        if self.static_feedforward is None:
+            return None
+        self.static_feedforward.update(
+            modal_pd.position_reference_m,
+            modal_pd.position_actual_m,
+        )
+        return self.static_feedforward.state
 
     def _validate_reference(self, reference):
         values = (
@@ -216,7 +248,8 @@ class TendonCompatibleAccelerationController:
 
     def _make_state(
         self, *, status, lengths, velocities, neutral, requested, projected,
-        residual, reference, modal_pd, allocation, command,
+        residual, reference, modal_pd, feedforward, total_effort, allocation,
+        command,
     ):
         contraction = neutral - lengths
         contraction_velocity = -velocities
@@ -243,6 +276,11 @@ class TendonCompatibleAccelerationController:
             input_projection_residual_m_s2=tuple(residual),
             reference=reference,
             modal_pd=modal_pd,
+            static_feedforward=feedforward,
+            desired_total_bending_effort_n=tuple(total_effort),
+            feedforward_out_of_envelope=(
+                feedforward.out_of_envelope if feedforward is not None else False
+            ),
             allocation=allocation,
             tension_command_n=tuple(command),
             reference_common_residuals=reference.common_residuals,
@@ -265,11 +303,14 @@ class TendonCompatibleAccelerationController:
             modal_pd = self._evaluate_pd(
                 lengths, velocities, neutral, self.reference.state
             )
+            feedforward = self._evaluate_feedforward(modal_pd)
             self._state = self._make_state(
                 status=status, lengths=lengths, velocities=velocities,
                 neutral=neutral, requested=requested, projected=projected,
                 residual=residual, reference=self.reference.state,
-                modal_pd=modal_pd, allocation=None, command=(0.0,) * 4,
+                modal_pd=modal_pd, feedforward=feedforward,
+                total_effort=modal_pd.desired_bending_effort_n,
+                allocation=None, command=(0.0,) * 4,
             )
             return self._state.tension_command_n
 
@@ -278,9 +319,15 @@ class TendonCompatibleAccelerationController:
             reference = self.reference.update_bending(bending_acceleration)
             self._validate_reference(reference)
             modal_pd = self._evaluate_pd(lengths, velocities, neutral, reference)
-            allocation = self.allocator.allocate(
-                modal_pd.desired_bending_effort_n
-            )
+            feedforward = self._evaluate_feedforward(modal_pd)
+            if feedforward is None:
+                total_effort = modal_pd.desired_bending_effort_n
+            else:
+                total_effort = tuple(
+                    np.asarray(modal_pd.desired_bending_effort_n)
+                    + np.asarray(feedforward.static_bending_effort_n)
+                )
+            allocation = self.allocator.allocate(total_effort)
             command = allocation.tension_n
             status = allocation.status
         except (
@@ -293,6 +340,12 @@ class TendonCompatibleAccelerationController:
             self._fault_tick = self._control_tick
             reference = self.reference.state
             modal_pd = self.modal_pd.state
+            feedforward = (
+                self.static_feedforward.state
+                if self.static_feedforward is not None
+                else None
+            )
+            total_effort = modal_pd.desired_bending_effort_n
             allocation = None
             command = (0.0,) * 4
             status = "fault_latched"
@@ -301,6 +354,7 @@ class TendonCompatibleAccelerationController:
             status=status, lengths=lengths, velocities=velocities,
             neutral=neutral, requested=requested, projected=projected,
             residual=residual, reference=reference, modal_pd=modal_pd,
+            feedforward=feedforward, total_effort=total_effort,
             allocation=allocation, command=command,
         )
         return self._state.tension_command_n
@@ -319,6 +373,22 @@ class TendonCompatibleAccelerationController:
         self, tendon_acceleration_m_s2, tendon_length_m, tendon_velocity_m_s
     ):
         projection = self.coordinates.project_to_bending(tendon_acceleration_m_s2)
+        return self._update(
+            projection.bending_coordinates,
+            projection,
+            tendon_length_m,
+            tendon_velocity_m_s,
+        )
+
+    def update_tendon_acceleration_strict(
+        self, tendon_acceleration_m_s2, tendon_length_m, tendon_velocity_m_s
+    ):
+        """Reject, rather than project, a non-bending four-tendon request."""
+        projection = self.coordinates.project_to_bending(tendon_acceleration_m_s2)
+        if projection.was_projected:
+            raise ValueError(
+                "tendon_acceleration_m_s2 is outside the retained bending subspace"
+            )
         return self._update(
             projection.bending_coordinates,
             projection,
