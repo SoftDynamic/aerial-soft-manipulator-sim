@@ -24,11 +24,18 @@ from multi_drone_mujoco.tests._scaled_stablesoft_actuation import (
     MAX_TENSION_N,
     TARGET_DAMPING_RATIO,
     resolve_tendon_actuator_bindings,
+    sample_ideal_tendon_transmission,
     write_tension_command,
 )
 from multi_drone_mujoco.tests._scaled_stablesoft_dynamics import (
     WarningLatch,
     build_fixed_arm_fixture,
+    composite_rotation_vector,
+    joint_rotation_vectors,
+    named_joint_addresses,
+)
+from multi_drone_mujoco.tests._scaled_stablesoft_acceleration_probe_runner import (
+    _spring_energy,
 )
 
 
@@ -91,7 +98,17 @@ class CompatibleClosedLoopTrace:
     q_actual_m: np.ndarray
     q_velocity_actual_m_s: np.ndarray
     desired_effort_n: np.ndarray
+    feedforward_effort_n: np.ndarray
+    total_effort_n: np.ndarray
     achieved_effort_n: np.ndarray
+    allocator_residual_n: np.ndarray
+    allocator_saturated: np.ndarray
+    feedforward_out_of_envelope: np.ndarray
+    tendon_length_m: np.ndarray
+    tendon_velocity_m_s: np.ndarray
+    tip_position_m: np.ndarray
+    joint_rotation_vectors_rad: np.ndarray
+    composite_rotation_vectors_rad: np.ndarray
     common_reference_residual: np.ndarray
     twist_candidate_reference_residual: np.ndarray
     allocator_status: tuple
@@ -99,6 +116,18 @@ class CompatibleClosedLoopTrace:
     contact_count: np.ndarray
     warning_events: tuple
     tendon_range_margin_m: np.ndarray
+    physics_time_s: np.ndarray
+    generalized_power_w: np.ndarray
+    actuator_power_w: np.ndarray
+    tendon_power_w: np.ndarray
+    command_tendon_power_w: np.ndarray
+    position_energy_j: np.ndarray
+    kinetic_energy_j: np.ndarray
+    spring_energy_j: np.ndarray
+    total_energy_j: np.ndarray
+    tendon_work_j: np.ndarray
+    damping_dissipation_j: np.ndarray
+    energy_ledger_residual_j: np.ndarray
 
 
 def _freeze(values, dtype=float):
@@ -128,11 +157,18 @@ def run_compatible_closed_loop(config):
         tendon_drive=IdealTendonTensionSpec(max_tension=MAX_TENSION_N),
     )
     model, data = fixture.model, fixture.data
+    model.opt.enableflags |= mujoco.mjtEnableBit.mjENBL_ENERGY
     bindings = tuple(resolve_tendon_actuator_bindings(fixture))
     tendon_names = tuple(item.tendon_name for item in bindings)
     tendon_ids = np.asarray([item.tendon_id for item in bindings], dtype=int)
     tendon_range = np.asarray(model.tendon_range[tendon_ids]).copy()
     drive = IdealTendonTensionSpec(max_tension=MAX_TENSION_N)
+    addresses = named_joint_addresses(model, fixture.manifest)
+    tip_id = mujoco.mj_name2id(
+        model, mujoco.mjtObj.mjOBJ_SITE, fixture.manifest.arm_tip_site_name
+    )
+    if tip_id < 0:
+        raise AssertionError("arm tip site is missing")
 
     mujoco.mj_resetData(model, data)
     write_tension_command(fixture, (0.0,) * 4, drive, bindings=bindings)
@@ -143,9 +179,25 @@ def run_compatible_closed_loop(config):
     controller.reset(data.ten_length[tendon_ids], data.ten_velocity[tendon_ids])
     controller.enable()
     warning_latch = WarningLatch()
+    diagnostic_data = mujoco.MjData(model)
+
+    def diagnostic_sample(command):
+        mujoco.mj_copyData(diagnostic_data, model, data)
+        mujoco.mj_forward(model, diagnostic_data)
+        mujoco.mj_energyPos(model, diagnostic_data)
+        mujoco.mj_energyVel(model, diagnostic_data)
+        return sample_ideal_tendon_transmission(
+            model, diagnostic_data, bindings, command
+        )
+
     records = []
+    physics_records = []
     range_margins = []
     contact_counts = []
+    tendon_work = 0.0
+    damping_dissipation = 0.0
+    diagnostic_sample((0.0,) * 4)
+    initial_energy = float(np.sum(diagnostic_data.energy))
 
     for tick in range(config.intervals):
         acceleration = _command_at_tick(config, tick)
@@ -159,7 +211,9 @@ def run_compatible_closed_loop(config):
         )
         if current_bindings != bindings or tuple(written) != tuple(tension):
             raise AssertionError("ideal tension binding or command changed")
+        transmission = diagnostic_sample(written)
         allocation = controller.state.allocation
+        feedforward = controller.state.static_feedforward
         records.append({
             "time": tick / CTRL_FREQ_HZ,
             "a": acceleration.copy(),
@@ -169,12 +223,29 @@ def run_compatible_closed_loop(config):
             "q": np.asarray(controller.state.bending_contraction_actual_m),
             "v": np.asarray(controller.state.bending_velocity_actual_m_s),
             "desired": np.asarray(controller.state.modal_pd.desired_bending_effort_n),
+            "feedforward": (
+                np.asarray(feedforward.static_bending_effort_n)
+                if feedforward is not None else np.zeros(2)
+            ),
+            "total": np.asarray(controller.state.desired_total_bending_effort_n),
             "achieved": np.asarray(allocation.achieved_bending_effort_n) if allocation else np.full(2, np.nan),
+            "residual": allocation.primary_residual_n if allocation else np.nan,
+            "saturated": allocation.status == "saturated_best_effort" if allocation else False,
+            "out_of_envelope": controller.state.feedforward_out_of_envelope,
+            "tendon_length": transmission.tendon_length.copy(),
+            "tendon_velocity": transmission.tendon_velocity.copy(),
+            "tip": np.asarray(data.site_xpos[tip_id]).copy(),
+            "joints": joint_rotation_vectors(model, data, addresses),
+            "composite": composite_rotation_vector(model, data, addresses),
             "common": np.asarray(controller.state.reference_common_residuals),
             "checker": np.asarray(controller.state.reference_twist_candidate_residuals),
             "status": controller.state.status,
             "fault": controller.state.fault_latched,
         })
+        previous_power = transmission.actuator_power
+        previous_damping = float(
+            -diagnostic_data.qfrc_damper @ diagnostic_data.qvel
+        )
         for _ in range(config.substeps):
             mujoco.mj_step(model, data)
             if not (
@@ -184,6 +255,36 @@ def run_compatible_closed_loop(config):
             ):
                 raise AssertionError("non-finite plant state")
             warning_latch.snapshot(data, stage="physics", step_index=len(range_margins) + 1)
+            current = diagnostic_sample(written)
+            current_damping = float(
+                -diagnostic_data.qfrc_damper @ diagnostic_data.qvel
+            )
+            dt = 1.0 / config.sim_freq_hz
+            tendon_work += 0.5 * (previous_power + current.actuator_power) * dt
+            damping_dissipation += 0.5 * (previous_damping + current_damping) * dt
+            total_energy = float(np.sum(diagnostic_data.energy))
+            physics_records.append({
+                "time": float(data.time),
+                "generalized_power": current.generalized_power,
+                "actuator_power": current.actuator_power,
+                "tendon_power": current.tendon_power,
+                "command_tendon_power": current.command_tendon_power,
+                "position_energy": float(diagnostic_data.energy[0]),
+                "kinetic_energy": float(diagnostic_data.energy[1]),
+                "spring_energy": _spring_energy(
+                    model,
+                    joint_rotation_vectors(model, diagnostic_data, addresses),
+                    addresses,
+                ),
+                "total_energy": total_energy,
+                "tendon_work": tendon_work,
+                "damping": damping_dissipation,
+                "ledger": total_energy - initial_energy - (
+                    tendon_work - damping_dissipation
+                ),
+            })
+            previous_power = current.actuator_power
+            previous_damping = current_damping
             contact_counts.append(int(data.ncon))
             lengths = np.asarray(data.ten_length[tendon_ids])
             range_margins.append(
@@ -201,7 +302,17 @@ def run_compatible_closed_loop(config):
         q_actual_m=_freeze([item["q"] for item in records]),
         q_velocity_actual_m_s=_freeze([item["v"] for item in records]),
         desired_effort_n=_freeze([item["desired"] for item in records]),
+        feedforward_effort_n=_freeze([item["feedforward"] for item in records]),
+        total_effort_n=_freeze([item["total"] for item in records]),
         achieved_effort_n=_freeze([item["achieved"] for item in records]),
+        allocator_residual_n=_freeze([item["residual"] for item in records]),
+        allocator_saturated=_freeze([item["saturated"] for item in records], dtype=bool),
+        feedforward_out_of_envelope=_freeze([item["out_of_envelope"] for item in records], dtype=bool),
+        tendon_length_m=_freeze([item["tendon_length"] for item in records]),
+        tendon_velocity_m_s=_freeze([item["tendon_velocity"] for item in records]),
+        tip_position_m=_freeze([item["tip"] for item in records]),
+        joint_rotation_vectors_rad=_freeze([item["joints"] for item in records]),
+        composite_rotation_vectors_rad=_freeze([item["composite"] for item in records]),
         common_reference_residual=_freeze([item["common"] for item in records]),
         twist_candidate_reference_residual=_freeze([item["checker"] for item in records]),
         allocator_status=tuple(item["status"] for item in records),
@@ -209,4 +320,16 @@ def run_compatible_closed_loop(config):
         contact_count=_freeze(contact_counts, dtype=int),
         warning_events=tuple(warning_latch.events),
         tendon_range_margin_m=_freeze(range_margins),
+        physics_time_s=_freeze([item["time"] for item in physics_records]),
+        generalized_power_w=_freeze([item["generalized_power"] for item in physics_records]),
+        actuator_power_w=_freeze([item["actuator_power"] for item in physics_records]),
+        tendon_power_w=_freeze([item["tendon_power"] for item in physics_records]),
+        command_tendon_power_w=_freeze([item["command_tendon_power"] for item in physics_records]),
+        position_energy_j=_freeze([item["position_energy"] for item in physics_records]),
+        kinetic_energy_j=_freeze([item["kinetic_energy"] for item in physics_records]),
+        spring_energy_j=_freeze([item["spring_energy"] for item in physics_records]),
+        total_energy_j=_freeze([item["total_energy"] for item in physics_records]),
+        tendon_work_j=_freeze([item["tendon_work"] for item in physics_records]),
+        damping_dissipation_j=_freeze([item["damping"] for item in physics_records]),
+        energy_ledger_residual_j=_freeze([item["ledger"] for item in physics_records]),
     )

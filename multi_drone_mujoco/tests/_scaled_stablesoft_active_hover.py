@@ -130,6 +130,37 @@ class C1B3RunConfig:
 
 
 @dataclass(frozen=True)
+class ModalControllerHoverRunConfig:
+    """C1-B3 plant/timing contract with an external modal command source."""
+
+    sim_freq: int
+    ctrl_freq: int = CTRL_FREQ
+    duration_s: float = DURATION_S
+    integrator: str = "implicitfast"
+    case: str = "modal_controller"
+
+    def __post_init__(self):
+        if self.sim_freq not in (2400, 4800):
+            raise ValueError("modal hover sim_freq must be 2400 or 4800")
+        if self.ctrl_freq != CTRL_FREQ:
+            raise ValueError("modal hover ctrl_freq must be 240")
+        if self.duration_s != DURATION_S:
+            raise ValueError("modal hover duration_s must be 3.0")
+        if self.integrator != "implicitfast":
+            raise ValueError("modal hover integrator must be implicitfast")
+        if self.case != "modal_controller":
+            raise ValueError("modal hover case is fixed")
+
+    @property
+    def sample_stride(self):
+        return self.sim_freq // self.ctrl_freq
+
+    @property
+    def requested_steps(self):
+        return int(round(self.duration_s * self.sim_freq))
+
+
+@dataclass(frozen=True)
 class C1B3Failure:
     case: str
     sim_freq: int
@@ -1030,10 +1061,16 @@ def _safety_accumulator():
     }
 
 
-def _run_active_hover(config, active_corners, baseline=None):
+def _run_active_hover(
+    config, active_corners, baseline=None, command_source=None
+):
     """Run one active-hover trajectory for explicit manifest corner names."""
-    if not isinstance(config, C1B3RunConfig):
-        raise TypeError("config must derive from C1B3RunConfig")
+    if not isinstance(config, (C1B3RunConfig, ModalControllerHoverRunConfig)):
+        raise TypeError("config must be a supported active-hover config")
+    if command_source is not None and not isinstance(
+        config, ModalControllerHoverRunConfig
+    ):
+        raise TypeError("external command_source requires modal hover config")
     active_corners = _validated_active_corners(active_corners)
     if baseline is not None:
         if baseline.config.sim_freq != config.sim_freq:
@@ -1070,8 +1107,10 @@ def _run_active_hover(config, active_corners, baseline=None):
 
         env.reset()
         data.qvel[:] = 0.0
-        command0 = _command_at_tick(
-            config, bindings_by_corner, 0, active_corners
+        command0 = (
+            (0.0,) * len(bindings)
+            if command_source is not None
+            else _command_at_tick(config, bindings_by_corner, 0, active_corners)
         )
         env.set_scaled_stablesoft_tension_command(command0)
         rpm = np.full(4, env.HOVER_RPM)
@@ -1096,6 +1135,12 @@ def _run_active_hover(config, active_corners, baseline=None):
             substep=0,
             stepping=False,
         )
+        if command_source is not None:
+            command_source.reset(
+                tuple(binding.tendon_name for binding in bindings),
+                initial_sync["transmission"].tendon_length,
+                initial_sync["transmission"].tendon_velocity,
+            )
         initial_root_tip_body = (
             np.asarray(data.xmat[entities.drone_id]).reshape(3, 3).T
             @ (
@@ -1160,8 +1205,20 @@ def _run_active_hover(config, active_corners, baseline=None):
 
         try:
             for tick in range(TOTAL_CONTROL_TICKS + 1):
-                command = _command_at_tick(
-                    config, bindings_by_corner, tick, active_corners
+                command = (
+                    command_source.update(
+                        tick,
+                        data.ten_length[
+                            np.asarray(entities.tendon_ids, dtype=int)
+                        ],
+                        data.ten_velocity[
+                            np.asarray(entities.tendon_ids, dtype=int)
+                        ],
+                    )
+                    if command_source is not None
+                    else _command_at_tick(
+                        config, bindings_by_corner, tick, active_corners
+                    )
                 )
                 written = env.set_scaled_stablesoft_tension_command(command)
                 if written != command:
@@ -1231,6 +1288,8 @@ def _run_active_hover(config, active_corners, baseline=None):
                     tick,
                     completed_steps,
                 )
+                if command_source is not None:
+                    sample.update(command_source.diagnostics())
                 accumulator["maximum_p_partition_residual_ns"] = max(
                     accumulator["maximum_p_partition_residual_ns"],
                     sample["p_partition_residual_ns"],
@@ -1377,6 +1436,20 @@ def run_c1_b3(config, baseline=None):
         config,
         CASE_CORNERS[config.case],
         baseline=baseline,
+    )
+
+
+def run_modal_controller_hover(config, command_source, baseline=None):
+    """Run the unchanged C1-B3 hover plant with an external modal controller."""
+    if not isinstance(config, ModalControllerHoverRunConfig):
+        raise TypeError("config must be ModalControllerHoverRunConfig")
+    if command_source is None:
+        raise TypeError("command_source is required")
+    return _run_active_hover(
+        config,
+        (),
+        baseline=baseline,
+        command_source=command_source,
     )
 
 
