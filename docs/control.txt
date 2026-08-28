@@ -1,0 +1,158 @@
+Gate C2-C2: compatible tendon bending acceleration control
+===========================================================
+
+Status and validity envelope
+----------------------------
+
+This design is accepted only for the calibrated fixed-root, vertical,
+no-contact StableSoft plant over the measured 0.002--0.010 N tendon range.
+It must not be treated as a globally calibrated free-flight, contact, or
+large-deformation model.
+
+The existing four-channel TendonContractionAccelerationController, four-value
+RPM action, ideal-tension writer, MJCF, manifest order, actuator gear, and
+0.01 N actuator limit are unchanged.  C2-C2 adds a separate compatible
+controller; it does not replace those APIs.
+
+Coordinates and public command semantics
+----------------------------------------
+
+Tendon corner order is resolved from manifest names.  In canonical order
+
+    s = [s_xp_yp, s_xp_yn, s_xn_yp, s_xn_yn]^T
+
+positive s means tendon contraction.  Define
+
+        [1  1  1  1]              [q_common]
+    G = [1  1 -1 -1]       q = 1/4 G s = [q_x]
+        [1 -1  1 -1]                     [q_y]
+        [1 -1 -1  1]                     [q_twist_candidate]
+
+and s = G^T q.  Thus the compatible bending expansion is
+
+    s = G_b^T [q_x, q_y]^T,    G_b = G[1:3, :].
+
+The public two-dimensional input (a_x, a_y) has units m/s^2 and means
+(q_x_ddot, q_y_ddot), tendon-modal contraction acceleration.  It is not UAV
+or tip Cartesian acceleration, curvature acceleration, or motor/spool
+acceleration.  Positive q_x and q_y bend toward +X and +Y respectively.
+
+A four-tendon acceleration may still enter the new controller for migration
+or diagnostics, but it is first projected by
+
+    P_b = 1/4 G_b^T G_b.
+
+For example, [100, 0, 0, 0] um is incompatible: its compatible part is
+[50, 0, 0, -50] um and its bending coordinate is [25, 25] um.  A public
+shape request should normally use the two-dimensional bending entry.
+
+Reference, feedback, and allocation
+-----------------------------------
+
+Acceleration, velocity, and contraction references are integrated directly
+in q_x/q_y.  Each is Euclidean-projected onto its configured two-dimensional
+L1 ball.  Expansion through G_b^T happens only after these limits, so the
+acceleration, velocity, and contraction states retain zero common and
+twist-candidate coordinates even after clipping.
+
+Feedback is explicitly two-dimensional:
+
+    f_des = Kp (q_ref - q_actual) + Kd (qdot_ref - qdot_actual).
+
+It does not run four independent tendon PD controllers.  Actual contraction
+is neutral_length - measured_length and actual contraction velocity is
+-measured_tendon_velocity before applying q = 1/4 G_b s.
+
+The allocator performs the following lexicographic problem, with T=0.01 N:
+
+    level 1: min ||G_b t - f_des||^2, subject to 0 <= t_i <= T;
+    level 2: among all level-1 minimizers, min ||t - t_bias||^2.
+
+The feasible bending-effort set is exactly |f_x|+|f_y| <= 2T.  Level 1 is
+therefore the Euclidean projection of f_des onto that diamond.  For a fixed
+active set at level 2, fixed variables are removed and free variables solve
+A_F t_F = r.  Production computes the orthogonal projection of the bias onto
+this affine set using an explicit SVD pseudoinverse; its null-space
+displacement is zero.  It enumerates all 3^4 lower/free/upper active sets and
+selects the global minimum bias distance.  This is not an arbitrary
+numpy.linalg.lstsq representative.
+
+There is no checker/twist-candidate optimization level.  The strictly convex
+level-2 objective has a unique tension result, so a later checker objective
+would either be redundant or violate lexicographic priority.  Common and
+checker efforts are diagnostics only.
+
+Preload and common terms
+------------------------
+
+Gate C2-C2 v1 sets t_bias and fixed preload to four exact zeros.  The
+fixed-root closed loop does not require a fixed preload.  The allocator may
+produce a positive mean tension to realize signed bending with nonnegative
+tendons; this is reported as dynamic_common_offset_n and is not called
+preload.  physical_common_effort_n is the response to an actual four-equal
+tension command.  These three terms remain distinct.
+
+Calibration Gate
+----------------
+
+For the supplied rounded 0.002 N tail-contraction matrix, the Hadamard modal
+vectors diagonalize the symmetric matrix.  Its singular values are
+
+    [148.999, 148.999, 0.0262, 0.0002] um,
+
+so the rounded decimal matrix has algebraic rank 4 and full-matrix condition
+number approximately 7.45e5.  The ratios are sigma_2/sigma_1=1 and
+sigma_3/sigma_2=1.76e-4.  This algebraic rank must not be confused with
+effective physical rank: the two tiny directions are dominated by chord
+nonlinearity/measurement scale and have no independently resolved common or
+axial-rotation response.  A direct 4x4 inverse would amplify those rejected
+directions and has neither a sound numerical nor physical interpretation.
+
+The 2400/4800 Hz, repeated, 0.002/0.006/0.010 N probes found sigma_1 and
+sigma_2 approximately 0.0745 m/N, sigma_2/sigma_1 approximately 1, stable
+retained-subspace principal angles no greater than 2.11e-8 rad, and frequency
+uncertainty norm 1.49e-6 m/N.  The small third chord singular value scales
+linearly with probe tension after division by the tension, identifying a
+quadratic bending-shortening chord rather than an independent linear mode.
+Four-equal physical common excitation produced zero response in this plant.
+
+Checker probes use [T,0,0,T] and [0,T,T,0], each with actual common offset
+T/2.  Half their response difference removes common effort.  No tendon, tip,
+or axial-rotation response was resolved.  This coordinate remains named
+twist-candidate; it is not claimed to be physical twist without tip/joint
+axial rotation evidence.
+
+The Gate must stop rather than freeze a global matrix if future probes show a
+changed effective rank, a material sigma_3/sigma_2 ratio, inconsistent +/-
+axis signs, non-determinism, or retained-subspace movement beyond the bound
+derived from measurement uncertainty and the sigma_2/sigma_3 gap.
+
+Fault and disabled semantics
+----------------------------
+
+The compatible controller starts and resets disabled.  A disabled control
+cycle writes four exact zero tensions and does not advance the reference.
+After explicit enable, zero acceleration retains the reset/hold reference
+semantics; with the v1 zero bias it does not add fixed preload.
+
+An allocator or internal compatibility numerical failure writes four exact
+zeros, records the exception reason and control tick, and latches the fault.
+Later cycles remain at zero and do not automatically recover.  reset() or
+clear_fault() is required explicitly.  Invalid caller values remain ordinary
+ValueError programming errors and do not silently become plant faults.
+
+Data-driven acceptance
+----------------------
+
+Allocator tests cover feasible/infeasible random efforts, diamond edges and
+vertices, degenerate/multiple-solution cases, several biases, all manifest
+permutations, an independent closed-form pair oracle, and a dense grid.  The
+production package has no SciPy dependency.
+
+With Kp=400 N/m, Kd=0.05 N*s/m, 0.04 m/s^2 accelerate/decelerate pulses and a
+100 um modal reference, fixed-root +/-X and +/-Y runs at 2400 and 4800 Hz
+settled to approximately 88.31 um in the measured tail.  Peak commanded
+tension was 3.03 mN, no allocator saturation/fault, warning, or contact was
+observed, cross-axis response was below 1e-12 m, and the maximum cross-rate
+transient q difference was 0.101 um.  These values are regression contracts
+for this validity envelope, not a claim of zero steady-state error.
