@@ -615,16 +615,28 @@ def _check_synchronized_sample(
         value={"ctrl": ctrl.tolist(), "command": command.tolist()},
         **context,
     )
+    active_indices = np.asarray(active_index, dtype=int)
+    if active_indices.ndim == 0:
+        active_indices = active_indices.reshape(1)
+    if (
+        active_indices.ndim != 1
+        or active_indices.size == 0
+        or np.any(active_indices < 0)
+        or np.any(active_indices >= 4)
+        or np.unique(active_indices).size != active_indices.size
+    ):
+        raise AssertionError("active tendon indices must be unique and in [0, 3]")
     inactive = np.ones(4, dtype=bool)
-    inactive[active_index] = False
+    inactive[active_indices] = False
+    inactive_zeros = np.zeros(int(np.count_nonzero(inactive)))
     _require(
-        np.array_equal(command[inactive], np.zeros(3)),
+        np.array_equal(command[inactive], inactive_zeros),
         field="inactive_command",
         value=command[inactive].tolist(),
         **context,
     )
     _require(
-        np.array_equal(ctrl[inactive], np.zeros(3)),
+        np.array_equal(ctrl[inactive], inactive_zeros),
         field="inactive_ctrl",
         value=ctrl[inactive].tolist(),
         **context,
