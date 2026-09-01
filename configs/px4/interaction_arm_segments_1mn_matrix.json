@@ -1,0 +1,22 @@
+{
+  "events": [
+    {"start_s": 6.0, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_00", "force_n": [0.001, 0.0, 0.0]},
+    {"start_s": 6.3, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_01", "force_n": [0.001, 0.0, 0.0]},
+    {"start_s": 6.6, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_02", "force_n": [0.001, 0.0, 0.0]},
+    {"start_s": 6.9, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_03", "force_n": [0.001, 0.0, 0.0]},
+    {"start_s": 7.2, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_04", "force_n": [0.001, 0.0, 0.0]},
+    {"start_s": 7.5, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_05", "force_n": [0.001, 0.0, 0.0]},
+    {"start_s": 7.8, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_06", "force_n": [0.001, 0.0, 0.0]},
+    {"start_s": 8.1, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_07", "force_n": [0.001, 0.0, 0.0]},
+    {"start_s": 8.4, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_08", "force_n": [0.001, 0.0, 0.0]},
+    {"start_s": 8.7, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_00", "force_n": [-0.001, 0.0, 0.0]},
+    {"start_s": 9.0, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_00", "force_n": [0.0, 0.001, 0.0]},
+    {"start_s": 9.3, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_00", "force_n": [0.0, -0.001, 0.0]},
+    {"start_s": 9.6, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_04", "force_n": [-0.001, 0.0, 0.0]},
+    {"start_s": 9.9, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_04", "force_n": [0.0, 0.001, 0.0]},
+    {"start_s": 10.2, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_04", "force_n": [0.0, -0.001, 0.0]},
+    {"start_s": 10.5, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_08", "force_n": [-0.001, 0.0, 0.0]},
+    {"start_s": 10.8, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_08", "force_n": [0.0, 0.001, 0.0]},
+    {"start_s": 11.1, "duration_s": 0.1, "mode": "external_force", "target_body": "drone0_scaled_stablesoft_arm_segment_08", "force_n": [0.0, -0.001, 0.0]}
+  ]
+}

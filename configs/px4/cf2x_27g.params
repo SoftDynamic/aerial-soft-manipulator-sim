@@ -1,0 +1,24 @@
+# PX4 v1.17 parameters derived for multi_drone_mujoco's rigid 27 g CF2X.
+# Loaded by the project launcher through PX4_PARAM_<name>; this is not a PX4
+# source-tree modification. Geometry uses PX4 FRD coordinates and Motor 1..4
+# order FR, RL, FL, RR.
+# KM signs include the FRD/FLU moment conversion used by this simulator; a
+# real single-axis PX4 probe rejects the opposite (+,+,-,-) sign set.
+CA_AIRFRAME 0
+CA_ROTOR_COUNT 4
+CA_ROTOR0_PX 0.028071129
+CA_ROTOR0_PY 0.028071129
+CA_ROTOR0_KM -0.025126582
+CA_ROTOR1_PX -0.028071129
+CA_ROTOR1_PY -0.028071129
+CA_ROTOR1_KM -0.025126582
+CA_ROTOR2_PX 0.028071129
+CA_ROTOR2_PY -0.028071129
+CA_ROTOR2_KM 0.025126582
+CA_ROTOR3_PX -0.028071129
+CA_ROTOR3_PY 0.028071129
+CA_ROTOR3_KM 0.025126582
+MPC_THR_HOVER 0.444444444
+MPC_THR_MAX 1.0
+MPC_THR_MIN 0.08
+THR_MDL_FAC 1.0

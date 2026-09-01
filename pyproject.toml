@@ -19,6 +19,7 @@ dependencies = [
 rl = ["stable-baselines3>=2.0.0"]
 marl = ["pettingzoo>=1.24.0"]
 viz = ["matplotlib>=3.5.0"]
+px4 = ["pymavlink>=2.4.40"]
 gpu = ["jax[cuda12]", "mujoco-mjx>=3.0.0"]
 all = [
     "stable-baselines3>=2.0.0",
@@ -43,3 +44,6 @@ multi_drone_mujoco = [
 
 [tool.pytest.ini_options]
 testpaths = ["multi_drone_mujoco/tests"]
+markers = [
+    "integration: requires an explicitly configured external PX4 SITL",
+]

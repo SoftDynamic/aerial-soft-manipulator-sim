@@ -13,6 +13,7 @@ High-fidelity quadcopter simulation with GPU-vectorized environments, Dryden win
 - **Multiple action types** — RPM, normalized thrust, velocity, PID waypoint
 - **Multiple observation types** — kinematics (state vector), RGB camera
 - **PID controllers** — tuned cascaded position/attitude PID (PIDControl + DSLPIDControl)
+- **Optional PX4 SITL backend** — typed lockstep, ideal sensors, configurable PWM/ESC model, local or remote transport
 - **PettingZoo multi-agent** — parallel environment wrapper for MARL
 - **7 task environments** — hover, velocity tracking, waypoint navigation, formation, racing, and more
 - **SB3 examples** — ready-to-run PPO training scripts
@@ -119,6 +120,27 @@ python play.py         # visualize trained policy
 ```bash
 pytest multi_drone_mujoco/tests/ -v
 ```
+
+PX4 remains optional. See [the architecture](docs/px4_sitl_architecture.md)
+and [operations/runbook](docs/px4_sitl_operations.md) for the fixed v1.17.0
+compatibility commit, standalone local/remote runner, parameter files, opt-in
+integration tests, and recorded P8-P10 evidence.
+
+For the active scaled StableSoft arm with an owned local PX4, the daily viewer
+command is:
+
+```bash
+./scripts/run_px4_viewer.sh mouse
+```
+
+The viewer filters selection to manifest-declared arm segments and applies a
+bounded force at the exact mouse pick point. Other presets are `tendon`,
+`keyboard-force`, and `joint`; the last is a `qfrc_applied` structural
+diagnostic, not tendon actuation evidence. Inspect the complete shell-escaped
+runner command with `--dry-run`, or append safe full-CLI overrides after `--`.
+The [operations runbook](docs/px4_sitl_operations.md#p11-interactive-arm-operation)
+contains controls, safety bounds, environment overrides, logs, and GLX
+troubleshooting.
 
 ## Project Structure
 

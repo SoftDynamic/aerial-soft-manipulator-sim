@@ -1,0 +1,20 @@
+{
+  "events": [
+    {
+      "start_s": 6.0,
+      "duration_s": 0.2,
+      "mode": "joint_torque",
+      "target_joint": "drone0_scaled_stablesoft_arm_segment_04_ball_joint",
+      "target_dof_axis": 0,
+      "joint_torque_nm": 0.00001
+    },
+    {
+      "start_s": 7.0,
+      "duration_s": 0.2,
+      "mode": "joint_torque",
+      "target_joint": "drone0_scaled_stablesoft_arm_segment_04_ball_joint",
+      "target_dof_axis": 0,
+      "joint_torque_nm": -0.00001
+    }
+  ]
+}

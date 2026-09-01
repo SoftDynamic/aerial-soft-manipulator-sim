@@ -1,0 +1,28 @@
+# PX4 v1.17 parameters for the 27 g CF2X plus the frozen 3 g passive arm.
+# Geometry and actuator limits are unchanged; total mass is 0.030 kg.
+# KM signs include the simulator's FRD/FLU moment conversion and are shared
+# with the real-probed rigid configuration.
+CA_AIRFRAME 0
+CA_ROTOR_COUNT 4
+CA_ROTOR0_PX 0.028071129
+CA_ROTOR0_PY 0.028071129
+CA_ROTOR0_KM -0.025126582
+CA_ROTOR1_PX -0.028071129
+CA_ROTOR1_PY -0.028071129
+CA_ROTOR1_KM -0.025126582
+CA_ROTOR2_PX 0.028071129
+CA_ROTOR2_PY -0.028071129
+CA_ROTOR2_KM 0.025126582
+CA_ROTOR3_PX -0.028071129
+CA_ROTOR3_PY 0.028071129
+CA_ROTOR3_KM 0.025126582
+MPC_THR_HOVER 0.493827160
+MPC_THR_MAX 1.0
+MPC_THR_MIN 0.08
+THR_MDL_FAC 1.0
+# PX4 v1.17 official Crazyflie 2.1 rate-loop group (airframe 4901). The
+# generic Iris defaults P=0.15, D=0.003 saturate this 30 g coupled plant.
+MC_ROLLRATE_P 0.07
+MC_ROLLRATE_D 0.002
+MC_PITCHRATE_P 0.07
+MC_PITCHRATE_D 0.002

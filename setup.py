@@ -18,6 +18,7 @@ setup(
         "rl": ["stable-baselines3>=2.0.0"],
         "marl": ["pettingzoo>=1.24.0"],
         "viz": ["matplotlib>=3.5.0"],
+        "px4": ["pymavlink>=2.4.40"],
         "all": [
             "stable-baselines3>=2.0.0",
             "pettingzoo>=1.24.0",

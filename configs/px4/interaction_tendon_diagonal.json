@@ -1,0 +1,16 @@
+{
+  "events": [
+    {
+      "start_s": 5.0,
+      "duration_s": 0.1,
+      "mode": "tendon_modal",
+      "tendon_acceleration_m_s2": [0.005, 0.005]
+    },
+    {
+      "start_s": 5.1,
+      "duration_s": 0.1,
+      "mode": "tendon_modal",
+      "tendon_acceleration_m_s2": [-0.005, -0.005]
+    }
+  ]
+}

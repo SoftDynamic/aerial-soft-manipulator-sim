@@ -1,0 +1,10 @@
+{
+  "events": [
+    {
+      "start_s": 5.0,
+      "duration_s": 0.2,
+      "mode": "external_force",
+      "force_n": [0.010, 0.0, 0.0]
+    }
+  ]
+}

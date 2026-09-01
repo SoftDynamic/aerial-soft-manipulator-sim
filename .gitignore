@@ -4,6 +4,7 @@ __pycache__/
 unit_tests/
 demo_gifs/
 logs/
+results/px4/
 .pytest_cache/
 MUJOCO_LOG.TXT
 mujoco_menagerie/
