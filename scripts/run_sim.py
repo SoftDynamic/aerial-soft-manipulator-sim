@@ -1,15 +1,28 @@
 #!/usr/bin/env python3
-"""Run the optional one-drone PX4 SITL/MuJoCo composition."""
+"""One startup path for native manual controls and the existing PX4 flow."""
 
 import argparse
-import json
+import queue
+import sys
+import time
 from pathlib import Path
 
-from multi_drone_mujoco.backends.px4_environment import Px4EnvironmentMode
-from multi_drone_mujoco.backends.px4_runner import (
-    Px4MujocoRunner,
-    Px4RunnerConfig,
+# Direct execution must use this worktree, not another editable checkout.
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+import mujoco
+import mujoco.viewer
+import numpy as np
+
+from multi_drone_mujoco.envs.base_aviary import BaseAviary
+from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
+    scaled_stablesoft_baseline_spec, ScaledStableSoftVisualSpec,
 )
+from multi_drone_mujoco.models.components.tendon_drive import IdealTendonTensionSpec
+from multi_drone_mujoco.control.scaled_stablesoft_bending_control import (
+    initialize_scaled_stablesoft_feedback, update_scaled_stablesoft_feedback,
+)
+from multi_drone_mujoco.backends.px4_runner import Px4RunnerConfig, Px4MujocoRunner
 
 
 def _vector3(value: str):
@@ -24,11 +37,11 @@ def _vector3(value: str):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run a rigid CF2X MuJoCo plant against PX4 SITL"
+        description="CF2X + StableSoft native actuator simulation"
     )
-    parser.add_argument("--mode", choices=("local", "remote"), required=True)
-    parser.add_argument("--bind-host", required=True)
-    parser.add_argument("--bind-port", required=True, type=int)
+    parser.add_argument("--mode", choices=("local", "remote"), default="local")
+    parser.add_argument("--bind-host", default="127.0.0.1")
+    parser.add_argument("--bind-port", default=4560, type=int)
     parser.add_argument("--launch-owned-px4", action="store_true")
     parser.add_argument("--autopilot-dir", type=Path)
     parser.add_argument("--simulator-host")
@@ -39,7 +52,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sim-freq", type=int, default=2400)
     parser.add_argument("--control-freq", type=int, default=200)
     parser.add_argument("--plant-step-freq", type=int)
-    parser.add_argument("--duration", type=float, default=5.0)
+    parser.add_argument("--duration", type=float, default=300.0)
     parser.add_argument("--handshake-timeout", type=float, default=10.0)
     parser.add_argument("--actuator-timeout", type=float, default=1.0)
     parser.add_argument("--bootstrap-max-frames", type=int, default=1000)
@@ -95,15 +108,122 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--log-dir", type=Path, default=Path("results/px4"))
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
-        "--plant", choices=("rigid", "passive_arm", "active_arm"), default="rigid"
+        "--plant", choices=("rigid", "passive_arm", "active_arm"), default="active_arm"
     )
+    parser.add_argument("--uav-source", choices=("manual", "px4"), default="manual")
+    parser.add_argument("--arm-source", choices=("manual", "controller"), default="manual")
+    parser.add_argument("--arm-acceleration", nargs=2, type=float, default=(0.0, 0.0), metavar=("AX", "AY"))
+    parser.add_argument("--visual-mode", choices=("mesh", "cylinder"), default="mesh")
+    parser.add_argument("--export-xml", type=Path)
+    parser.add_argument("--headless", dest="viewer", action="store_false")
+    parser.set_defaults(viewer=True, interaction_mode=None)
     return parser
 
 
-def main() -> int:
-    args = build_parser().parse_args()
+def create_manual_env(args):
+    if args.arm_source == "controller" and args.plant != "active_arm":
+        raise ValueError("arm controller requires --plant active_arm")
+    frequency = args.plant_step_freq or 1200
+    if args.arm_source == "controller" and frequency % 240:
+        raise ValueError("plant step frequency must be divisible by 240 Hz")
+    if args.duration <= 0 or not np.isfinite(args.duration):
+        raise ValueError("duration must be finite and positive")
+    arm = scaled_stablesoft_baseline_spec() if args.plant != "rigid" else None
+    return BaseAviary(
+        initial_xyzs=np.asarray([args.initial_position]),
+        sim_freq=args.sim_freq, ctrl_freq=frequency, gui=False,
+        integrator="implicitfast" if arm else "RK4",
+        scaled_stablesoft_arm=arm,
+        scaled_stablesoft_visual=ScaledStableSoftVisualSpec(mode=args.visual_mode) if arm else None,
+        scaled_stablesoft_tendon_drive=IdealTendonTensionSpec(0.01) if args.plant == "active_arm" else None,
+        uav_source="manual", arm_source=args.arm_source,
+    )
+
+
+def run_manual(env, args):
+    """Read native input, update feedback at 240 Hz, delegate physics to BaseAviary."""
+    events = queue.SimpleQueue()
+    viewer = None
+    controller = None
+    env.reset()
+    if args.arm_source == "controller":
+        controller, tendon_ids = initialize_scaled_stablesoft_feedback(env)
+    stride = env.CTRL_FREQ // 240 if controller else None
+    paused = args.viewer
+    single_step = False
+    index = 0
+    steps = int(round(args.duration * env.CTRL_FREQ))
+    deadline = time.monotonic()
+    try:
+        if args.viewer:
+            viewer = mujoco.viewer.launch_passive(
+                env.model, env.data, key_callback=lambda key: events.put(key),
+                show_left_ui=True, show_right_ui=True,
+            )
+            with viewer.lock():
+                viewer.cam.lookat[:] = env.pos[0]
+                viewer.cam.distance = 0.6
+            print("Native Control: rotor thrust [N], tendon tension [N]. Space pause/resume; . single step; Backspace reset; Q close.")
+        while index < steps and (viewer is None or viewer.is_running()):
+            if viewer:
+                viewer.sync()
+                import glfw
+                while not events.empty():
+                    key = events.get_nowait()
+                    if key == glfw.KEY_SPACE:
+                        paused = not paused
+                    elif key == glfw.KEY_PERIOD and paused:
+                        single_step = True
+                    elif key == glfw.KEY_Q:
+                        return
+                    elif key == glfw.KEY_BACKSPACE:
+                        with viewer.lock():
+                            env.reset()
+                            if controller:
+                                controller, tendon_ids = initialize_scaled_stablesoft_feedback(env)
+                        index = 0
+                if paused and not single_step:
+                    env.data.xfrc_applied[:] = 0.0
+                    time.sleep(1 / 60)
+                    continue
+            if viewer:
+                with viewer.lock():
+                    if controller and index % stride == 0:
+                        update_scaled_stablesoft_feedback(env, controller, tendon_ids, args.arm_acceleration)
+                    env.step()
+            else:
+                if controller and index % stride == 0:
+                    update_scaled_stablesoft_feedback(env, controller, tendon_ids, args.arm_acceleration)
+                env.step()
+            index += 1
+            single_step = False
+            if viewer:
+                viewer.sync()
+                deadline = max(deadline + env.CTRL_TIMESTEP, time.monotonic())
+                time.sleep(max(0.0, deadline - time.monotonic()))
+    finally:
+        env.clear_automatic_commands()
+        if viewer:
+            viewer.close()
+            # Preserve the existing native teardown grace before model destruction.
+            time.sleep(2.0)
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
+    if args.uav_source == "manual":
+        if args.launch_owned_px4 or args.auto_flight:
+            raise ValueError("PX4 launch/flight options require --uav-source px4")
+        env = create_manual_env(args)
+        try:
+            if args.export_xml:
+                env.save_generated_xml(args.export_xml)
+            run_manual(env, args)
+        finally:
+            env.close()
+        return 0
     config = Px4RunnerConfig(
-        mode=Px4EnvironmentMode(args.mode),
+        mode=args.mode,
         bind_host=args.bind_host,
         bind_port=args.bind_port,
         launch_owned_px4=args.launch_owned_px4,
@@ -139,7 +259,11 @@ def main() -> int:
         spool_target_height_offset_m=args.spool_target_height_offset,
         release_transition_s=args.release_transition,
         plant=args.plant,
-        interaction_mode=args.interaction_mode,
+        arm_source=args.arm_source, arm_acceleration_m_s2=tuple(args.arm_acceleration),
+        visual_mode=args.visual_mode,
+        interaction_mode=args.interaction_mode or (
+            "mouse_force" if args.viewer and args.plant != "rigid" else "disabled"
+        ),
         interaction_script=args.interaction_script,
         interaction_target_body=args.interaction_target_body,
         interaction_target_site=args.interaction_target_site,
@@ -158,8 +282,13 @@ def main() -> int:
         allow_unverified_joint_torque=args.allow_unverified_joint_torque,
     )
     runner = Px4MujocoRunner.create_default(config)
-    metrics = runner.run()
-    print(json.dumps(metrics.__dict__, indent=2, sort_keys=True))
+    try:
+        if args.export_xml:
+            runner.aviary.save_generated_xml(args.export_xml)
+        metrics = runner.run()
+    finally:
+        runner.close()
+    print(f"PX4 outcome={metrics.outcome}; steps={metrics.physics_steps}; log={metrics.log_path}")
     return 0 if metrics.outcome == "completed" else 2
 
 

@@ -42,14 +42,22 @@ class FakeAviary:
         self.HOVER_RPM = 15000.0
         self._generated_xml = '<mujoco model="fake"/>'
         self.data = SimpleNamespace(ncon=0, ctrl=np.zeros(0))
+        self.SCALED_STABLESOFT_TENDON_BINDINGS = ()
+        self.command = np.zeros(4)
 
     def reset(self, seed=None):
         self.pos[:] = (0.0, 0.0, 1.0)
         self.vel[:] = 0.0
         self.actions.clear()
 
-    def step(self, action):
-        self.actions.append(tuple(action))
+    def set_rotor_rpm_command(self, rpm, *, armed=True):
+        self.command = np.asarray(rpm) if armed else np.zeros(4)
+
+    def clear_automatic_commands(self):
+        self.command = np.zeros(4)
+
+    def step(self, action=None):
+        self.actions.append(tuple(self.command))
 
     def render(self):
         pass
@@ -255,7 +263,15 @@ def _fake_packets(count, *, normalized=2.0 / 3.0):
     ]
 
 
-def test_headless_replay_applies_tip_force_once_per_step_and_clears_it(tmp_path):
+@pytest.mark.parametrize("gui", [False, True])
+def test_replay_applies_tip_force_once_per_step_and_clears_it(tmp_path, monkeypatch, gui):
+    if gui:
+        from mujoco import viewer as native_viewer
+        viewer = SimpleNamespace(
+            perturb=SimpleNamespace(select=0), is_running=lambda: True,
+            sync=lambda: None, close=lambda: None,
+        )
+        monkeypatch.setattr(native_viewer, "launch_passive", lambda *a, **kw: viewer)
     event_path = tmp_path / "force.json"
     event_path.write_text(json.dumps({"events": [{
         "start_s": 0.005,
@@ -270,7 +286,7 @@ def test_headless_replay_applies_tip_force_once_per_step_and_clears_it(tmp_path)
         plant="passive_arm",
         duration_s=0.020,
         bootstrap_wall_interval_s=0.0,
-        interaction_mode="replay",
+        gui=gui, interaction_mode="replay",
         interaction_script=event_path,
         interaction_max_force_n=0.005,
         log_dir=tmp_path,
@@ -286,7 +302,7 @@ def test_headless_replay_applies_tip_force_once_per_step_and_clears_it(tmp_path)
     after = []
     real_step = created.aviary.step
 
-    def recording_step(action):
+    def recording_step(action=None):
         before.append(created.aviary.data.xfrc_applied[body_id].copy())
         result = real_step(action)
         after.append(created.aviary.data.xfrc_applied[body_id].copy())
@@ -318,6 +334,7 @@ def test_headless_tendon_replay_enters_frozen_modal_controller(tmp_path, monkeyp
         bind_host="127.0.0.1",
         bind_port=4560,
         plant="active_arm",
+        arm_source="controller",
         duration_s=0.025,
         bootstrap_wall_interval_s=0.0,
         interaction_mode="replay",
@@ -383,7 +400,7 @@ def test_headless_joint_diagnostic_replay_writes_only_arm_dof_and_clears(tmp_pat
     after = []
     real_step = created.aviary.step
 
-    def recording_step(action):
+    def recording_step(action=None):
         before.append(created.aviary.data.qfrc_applied.copy())
         result = real_step(action)
         after.append(created.aviary.data.qfrc_applied.copy())

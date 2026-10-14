@@ -3,7 +3,8 @@
 ## Status and boundary
 
 PX4 is an optional controller backend outside `BaseAviary`. The existing
-Gymnasium contract remains `env.step(rpm)` and MuJoCo remains the owner of
+RPM API remains available for automatic callers; the unified runner caches
+RPM-derived thrust then calls `env.step()` while MuJoCo owns
 vehicle and arm physics. Importing or running the core environments must not
 import `pymavlink`, locate a PX4 checkout, open a socket, or start a process.
 
@@ -13,17 +14,15 @@ The integration is split into these replaceable layers:
 MuJoCo truth -> ideal sensor adapter -> SimulatorTransport -> PX4 SITL
        ^                                      |
        |                                      v
- env.step(RPM) <- ESC/motor <- PWM model <- normalized motor output
+ env.step() <- named site-actuator thrust cache <- RPM <- PWM <- normalized output
 
 independent path: tendon-modal controller -> ideal tendon tension actuators
 ```
 
-`multi_drone_mujoco.backends` owns typed data contracts and the controller
-lifecycle. `BaseAviary`, the MJCF builder, the Python PID, manual controller,
-RL actions, and the accepted tendon-modal controller do not depend on that
-package. A caller may therefore drive the unchanged RPM action with a Python
-PID, an NMPC adapter, an RL adapter, manual input, PX4 SITL, or a future HITL
-adapter.
+`multi_drone_mujoco.backends` owns typed PX4 contracts and lifecycle. The
+unified CLI exposes UAV `manual|px4` and arm `manual|controller` independently.
+Core model/environment imports do not start or require a PX4 process. The
+retained PID is an internal dependency, not an additional CLI source.
 
 ## Data and actuator semantics
 
@@ -39,9 +38,11 @@ models:
    reordered and linearly scaled to PWM pulse-width semantics in microseconds.
 2. PWM is mapped linearly to steady-state revolutions per minute. An optional
    first-order lag uses an exact exponential discrete update.
-3. The resulting rotor-speed command is passed unchanged to `env.step`.
-4. Existing physics computes thrust as `KF * RPM**2` and reaction torque as
-   `KM * RPM**2`.
+3. Cache thrust `KF * RPM**2` at the PX4 update boundary.
+4. Before every MuJoCo advance, restore automatic thrust at named actuator
+   addresses. Site gear produces axial thrust plus `KM * RPM**2` reaction
+   torque; rotor positions produce roll/pitch torque. Manual groups use the
+   same actuators directly through native sliders and are never restored.
 
 Standard PX4 SITL `HIL_ACTUATOR_CONTROLS` values are normalized actuator
 controls; they are **not physical microsecond PWM values**. PWM in this
@@ -54,7 +55,7 @@ Arming, disarming, armed idle, clipping policy, channel order, CW/CCW metadata,
 PWM endpoints, RPM endpoints, and motor time constant are configuration. The
 CF2X default keeps simulator rotor order 0..3 (front-left, rear-left,
 rear-right, front-right) and directions `(-1, +1, -1, +1)`, matching the yaw
-signs already used by `BaseAviary._physics`.
+signs preserved from the Commit 1 propulsion model.
 
 ## Frames and sensor truth
 
@@ -130,7 +131,7 @@ directory, host, port, PWM, or RPM value is embedded in business logic.
 
 PX4 and MuJoCo use different body frames and channel orders. PX4's 10016
 geometry is FRD and orders motors FR, RL, FL, RR. The repository MJCF sites
-and `_physics()` equations are FLU and order rotors FL, RL, RR, FR. Therefore
+and propulsion equations are FLU and order rotors FL, RL, RR, FR. Therefore
 the adapter permutation (simulator rotor → PX4 zero-based channel) is
 `(2, 1, 3, 0)`. Signs below are moments in the MuJoCo FLU body frame; `+1`
 direction means clockwise and `-1` counter-clockwise when viewed from above.
@@ -144,7 +145,7 @@ direction means clockwise and `-1` counter-clockwise when viewed from above.
 
 This follows directly from PX4 v1.17's effectiveness equation
 `moment = ct * position.cross(axis) - ct * km * axis`, with upward FRD axis
-`(0, 0, -1)`, and from this repository's `_physics()` equations. The
+`(0, 0, -1)`, and from the Commit 1 propulsion equations. The
 single-channel unit probe checks the same six signs and permutation. The table
 reports MuJoCo FLU moments. PX4's standard 10016 rotor labels cannot be copied
 directly into this adapter: after the FRD/FLU moment conversion, the repository
@@ -166,16 +167,18 @@ parameter file is `configs/px4/cf2x_27g.params`.
 The standalone runner keeps the three controller clocks explicit. Rigid and
 passive runs use a 200 Hz PX4/plant boundary. Active-arm runs use an exact
 1200 Hz common plant scheduler, update PX4 at 200 Hz (every sixth tick), and
-update the frozen tendon-modal controller at 240 Hz (every fifth tick).
+update the frozen tendon-modal controller at 240 Hz (every fifth tick) when
+`arm_source=controller`; manual arm groups are left untouched.
 MuJoCo may use 2400 or 4800 Hz substeps without changing either controller's
 accepted timestep. PX4 owns only UAV flight stabilization; the tendon-modal
 controller owns only the two bending modes, and MuJoCo remains the sole
 coupled plant.
 
 An optional local launcher is owned by the runner only when explicitly
-requested. A disconnect-injection run may terminate that exact child process;
+requested. It terminates only that exact child process during cleanup;
 it cannot discover or kill any external PX4. Timeout or disconnect returns
-safe zero rotor output and does not advance another MuJoCo plant step.
+safe zero rotor output, clears selected automatic caches, and does not advance
+another MuJoCo plant step; manual arm controls remain unchanged.
 
 ## Known first-stage limitations
 

@@ -66,3 +66,27 @@ def make_scaled_stablesoft_bending_controller(
         scaled_stablesoft_bending_controller_config(control_frequency_hz),
         tendon_names,
     )
+
+
+def initialize_scaled_stablesoft_feedback(env):
+    """Construct/reset/enable the existing controller from compiled tendon state."""
+    bindings = env.SCALED_STABLESOFT_TENDON_BINDINGS
+    ids = [binding.tendon_id for binding in bindings]
+    controller = make_scaled_stablesoft_bending_controller(
+        [binding.tendon_name for binding in bindings]
+    )
+    controller.reset(env.data.ten_length[ids], env.data.ten_velocity[ids])
+    controller.enable()
+    env.set_scaled_stablesoft_tension_command((0.0,) * len(bindings))
+    return controller, ids
+
+
+def update_scaled_stablesoft_feedback(env, controller, tendon_ids, acceleration):
+    """One 240 Hz computation; BaseAviary holds its valid result at each substep."""
+    tension = controller.update_bending_acceleration(
+        acceleration, env.data.ten_length[tendon_ids], env.data.ten_velocity[tendon_ids]
+    )
+    env.set_scaled_stablesoft_tension_command(tension)
+    if controller.fault_latched:
+        raise RuntimeError(f"soft-arm controller fault: {controller.state.fault_reason}")
+    return tension

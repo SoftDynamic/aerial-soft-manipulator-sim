@@ -66,7 +66,8 @@ for port_name in bind_port gcs_bind_port; do
 done
 
 common=(
-  "$python_bin" "$repo_root/scripts/run_px4_sitl.py"
+  "$python_bin" "$repo_root/scripts/run_sim.py"
+  --uav-source px4
   --mode local --bind-host "$bind_host" --bind-port "$bind_port"
   --launch-owned-px4 --autopilot-dir "$autopilot_dir"
   --simulator-host "$simulator_host"
@@ -82,20 +83,20 @@ common=(
 preset=()
 case $mode in
   mouse)
-    preset=(--interaction-mode mouse_force --force-step-mn 0.5 --max-force-mn 1.0)
+    preset=(--arm-source manual --interaction-mode mouse_force --force-step-mn 0.5 --max-force-mn 1.0)
     ;;
   tendon)
     preset=(
-      --interaction-mode tendon_modal
+      --arm-source controller --interaction-mode tendon_modal
       --tendon-acceleration-step 0.005 --tendon-acceleration-limit 0.04
     )
     ;;
   keyboard-force)
-    preset=(--interaction-mode keyboard_force --force-step-mn 0.5 --max-force-mn 1.0)
+    preset=(--arm-source manual --interaction-mode keyboard_force --force-step-mn 0.5 --max-force-mn 1.0)
     ;;
   joint)
     preset=(
-      --interaction-mode joint_torque
+      --arm-source manual --interaction-mode joint_torque
       --joint-torque-step-unm 10 --joint-torque-limit-unm 50
     )
     ;;

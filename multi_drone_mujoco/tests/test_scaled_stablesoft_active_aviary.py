@@ -105,7 +105,7 @@ def test_passive_builder_interface_and_xml_are_unchanged():
 
     model = mujoco.MjModel.from_xml_string(build.xml)
     assert model.ntendon == 4
-    assert model.nu == 0
+    assert model.nu == 4
     assert model.na == 0
 
 
@@ -153,7 +153,7 @@ def test_active_model_manifest_transmissions_and_runtime_bindings():
         bindings = env.SCALED_STABLESOFT_TENDON_BINDINGS
 
         assert model.ntendon == 4
-        assert model.nu == 4
+        assert model.nu == 8
         assert model.na == 0
         assert len(manifest.tendon_names) == 4
         assert len(manifest.tendon_actuator_names) == 4
@@ -464,14 +464,14 @@ def test_zero_tension_active_and_passive_hover_are_equivalent_for_one_second():
                 float(np.max(np.abs(passive.data.energy - active.data.energy))),
             )
             np.testing.assert_allclose(
-                active.data.actuator_force,
+                active.data.actuator_force[[b.output_address for b in active.SCALED_STABLESOFT_TENDON_BINDINGS]],
                 0.0,
                 rtol=0.0,
                 atol=1.0e-15,
             )
             np.testing.assert_allclose(
                 active.data.qfrc_actuator,
-                0.0,
+                passive.data.qfrc_actuator,
                 rtol=0.0,
                 atol=1.0e-15,
             )

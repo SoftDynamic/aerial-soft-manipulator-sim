@@ -79,15 +79,9 @@ def build_ideal_tendon_tension_actuator_xml(
 ) -> Tuple[str, Tuple[str, ...]]:
     """Build one direct tendon motor per name, preserving input order."""
     tendon_names = tuple(tendon_names)
-    suffix = "_tendon"
     actuator_names = tuple(
-        (
-            tendon_name[:-len(suffix)]
-            if tendon_name.endswith(suffix)
-            else tendon_name
-        )
-        + "_ideal_tension_actuator"
-        for tendon_name in tendon_names
+        f"t{index}_tension_N"
+        for index in range(len(tendon_names))
     )
     maximum = _float_text(spec.max_tension)
     actuator_xml = "\n".join(

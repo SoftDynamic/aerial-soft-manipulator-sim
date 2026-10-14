@@ -229,8 +229,8 @@ def test_ideal_tendon_tension_xml_is_minimal_and_ordered():
     root = ET.fromstring(f"<actuator>{xml}</actuator>")
 
     assert actuator_names == tuple(
-        name[:-len("_tendon")] + "_ideal_tension_actuator"
-        for name in tendon_names
+        f"t{index}_tension_N"
+        for index in range(len(tendon_names))
     )
     assert [element.tag for element in root] == ["motor"] * 4
     for element, tendon_name, actuator_name in zip(
@@ -299,15 +299,13 @@ def test_active_fixture_compiles_named_one_to_one_tendon_transmissions():
     assert fragments.manifest.tendon_actuator_names == (
         manifest.tendon_actuator_names
     )
-    for corner, tendon_name, actuator_name in zip(
+    for index, (corner, tendon_name, actuator_name) in enumerate(zip(
         CORNERS,
         manifest.tendon_names,
         manifest.tendon_actuator_names,
-    ):
+    )):
         assert tendon_name.endswith(f"_{corner}_tendon")
-        assert actuator_name.endswith(
-            f"_{corner}_ideal_tension_actuator"
-        )
+        assert actuator_name == f"t{index}_tension_N"
     assert tuple(
         binding.actuator_id for binding in bindings
     ) == tuple(sorted(binding.actuator_id for binding in bindings))

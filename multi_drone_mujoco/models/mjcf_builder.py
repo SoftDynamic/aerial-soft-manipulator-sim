@@ -42,6 +42,7 @@ class AviaryMjcfBuild:
 
     xml: str
     scaled_stablesoft_arm_manifest: Optional[ArmMjcfManifest]
+    rotor_actuator_names: tuple[tuple[str, ...], ...]
 
 
 def build_aviary_mjcf(
@@ -146,6 +147,12 @@ def build_aviary_mjcf(
     tendons = ""
     arm_assets = ""
     scaled_stablesoft_arm_manifest = None
+    rotor_actuator_names = []
+    max_rotor_thrust = params["thrust2weight_ratio"] * mass * 9.81 / 4
+    reaction_ratio = params["km"] / params["kf"]
+    reaction_signs = (-1, 1, -1, 1)
+    if drone_model == DroneModel.RACE:
+        reaction_signs = tuple(-sign for sign in reaction_signs)
 
     for d in range(num_drones):
         x, y, z = init_xyzs[d]
@@ -188,6 +195,15 @@ def build_aviary_mjcf(
         prop_sites = ""
         for pi, (px, py, pz) in enumerate(prop_offsets):
             prop_sites += f'      <site name="{prefix}_prop{pi}" pos="{px} {py} {pz}" group="5"/>\n'
+
+        rotor_names = tuple(f"r{4 * d + pi}_thrust_N" for pi in range(4))
+        rotor_actuator_names.append(rotor_names)
+        for pi, actuator_name in enumerate(rotor_names):
+            actuators += (
+                f'    <general name="{actuator_name}" site="{prefix}_prop{pi}" '
+                f'gear="0 0 1 0 0 {reaction_signs[pi] * reaction_ratio:.17g}" '
+                f'ctrllimited="true" ctrlrange="0 {max_rotor_thrust:.17g}"/>\n'
+            )
 
         drone_bodies += f"""
     <body name="{prefix}" pos="{x} {y} {z}" quat="{qw} {qx} {qy} {qz}">
@@ -335,4 +351,5 @@ def build_aviary_mjcf(
     return AviaryMjcfBuild(
         xml=xml,
         scaled_stablesoft_arm_manifest=scaled_stablesoft_arm_manifest,
+        rotor_actuator_names=tuple(rotor_actuator_names),
     )

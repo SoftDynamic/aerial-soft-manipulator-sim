@@ -60,16 +60,16 @@ This command is intentionally not run by the project or test suite.
 ## Standalone runner
 
 The runner never starts PX4 unless `--launch-owned-px4` is present. A complete
-local rigid flight is:
+local rigid headless flight is:
 
 ```bash
-/home/ustc/miniconda3/envs/mujoco_uav/bin/python scripts/run_px4_sitl.py \
+/home/ustc/miniconda3/envs/mujoco_uav/bin/python scripts/run_sim.py --uav-source px4 --arm-source manual \
   --mode local --bind-host 127.0.0.1 --bind-port 4560 \
   --launch-owned-px4 --autopilot-dir /home/ustc/PX4-Autopilot \
   --simulator-host 127.0.0.1 \
   --parameter-file configs/px4/cf2x_27g.params \
   --gcs-bind-host 127.0.0.1 --gcs-bind-port 14550 \
-  --auto-flight --plant rigid --sim-freq 2400 --control-freq 200 \
+  --headless --auto-flight --plant rigid --sim-freq 2400 --control-freq 200 \
   --initial-position 0,0,1 --target-position 0,0,1 \
   --duration 30 --log-dir results/px4
 ```
@@ -225,9 +225,9 @@ hide the printed command from `--dry-run`.
 
 | Preset | Interaction | Default bound |
 | --- | --- | --- |
-| `mouse` | pick and drag any manifest arm segment | 1 mN, unverified all-segment debug envelope |
+| `mouse` | PX4 UAV + manual arm; pick UAV or manifest arm segment | 1 mN, unverified all-segment debug envelope |
 | `keyboard-force` | XY force pulses on the currently selected segment | 1 mN |
-| `tendon` | accepted Gate C2 two-mode controller | 0.04 m/s²; 300 µm L1; <10 mN tension |
+| `tendon` | PX4 UAV + controller arm, accepted Gate C2 two-mode controller | 0.04 m/s²; 300 µm L1; <10 mN tension |
 | `joint` | internal ball-joint `qfrc_applied` diagnostic | 10 µN·m step; 50 µN·m limit |
 
 The earlier **terminal-tip-only** 5 mN/0.2 s envelope remains valid only for
@@ -257,7 +257,7 @@ and can intentionally override a preset.
 ### Local owned PX4 viewer
 
 ```bash
-/home/ustc/miniconda3/envs/mujoco_uav/bin/python scripts/run_px4_sitl.py \
+/home/ustc/miniconda3/envs/mujoco_uav/bin/python scripts/run_sim.py --uav-source px4 --arm-source manual \
   --mode local --bind-host 127.0.0.1 --bind-port 4560 \
   --launch-owned-px4 --autopilot-dir /home/ustc/PX4-Autopilot \
   --simulator-host 127.0.0.1 \
@@ -283,7 +283,7 @@ Start the compatible PX4 separately with `PX4_SIM_HOSTNAME=127.0.0.1`, then
 run the same command without `--launch-owned-px4` and `--autopilot-dir`:
 
 ```bash
-/home/ustc/miniconda3/envs/mujoco_uav/bin/python scripts/run_px4_sitl.py \
+/home/ustc/miniconda3/envs/mujoco_uav/bin/python scripts/run_sim.py --uav-source px4 --arm-source manual \
   --mode local --bind-host 127.0.0.1 --bind-port 4560 \
   --parameter-file configs/px4/cf2x_scaled_stablesoft_passive.params \
   --gcs-bind-host 127.0.0.1 --gcs-bind-port 14550 --auto-flight \
@@ -299,7 +299,7 @@ the remote PX4 simulator hostname to that address. Network/firewall changes
 remain external to this project.
 
 ```bash
-/home/ustc/miniconda3/envs/mujoco_uav/bin/python scripts/run_px4_sitl.py \
+/home/ustc/miniconda3/envs/mujoco_uav/bin/python scripts/run_sim.py --uav-source px4 --arm-source manual \
   --mode remote --bind-host 192.0.2.10 --bind-port 4560 \
   --gcs-bind-host 192.0.2.10 --gcs-bind-port 14550 --auto-flight \
   --plant active_arm --plant-step-freq 1200 \
@@ -344,14 +344,14 @@ soft-arm actuator performance evidence.
 An event script uses simulation time only:
 
 ```bash
-/home/ustc/miniconda3/envs/mujoco_uav/bin/python scripts/run_px4_sitl.py \
+/home/ustc/miniconda3/envs/mujoco_uav/bin/python scripts/run_sim.py --uav-source px4 --arm-source manual \
   --mode local --bind-host 127.0.0.1 --bind-port 4560 \
   --launch-owned-px4 --autopilot-dir /home/ustc/PX4-Autopilot \
   --simulator-host 127.0.0.1 \
   --parameter-file configs/px4/cf2x_scaled_stablesoft_passive.params \
   --gcs-bind-host 127.0.0.1 --gcs-bind-port 14550 --auto-flight \
   --plant passive_arm --sim-freq 2400 --control-freq 200 --duration 12 \
-  --interaction-mode replay \
+  --headless --interaction-mode replay \
   --interaction-script configs/px4/interaction_force_5mn_x.json \
   --log-dir results/px4/p11
 ```
@@ -449,8 +449,7 @@ above, interact, press Esc, and verify landing plus natural process exit:
 
 ```bash
 DISPLAY=:1 /home/ustc/miniconda3/envs/mujoco_uav/bin/python \
-  -m multi_drone_mujoco.examples.manual_aerial_soft_arm_demo \
-  --rpm-step 100 --tension-step 0.001
+  scripts/run_sim.py --uav-source manual --arm-source manual
 ```
 
 `GLXBadContext/GLXBadDrawable` was previously reproduced during context
@@ -467,3 +466,10 @@ launcher for both `mouse` (2 s) and `joint` (1 s); both created the viewer,
 landed/disarmed, cleaned the owned PX4 process, and exited 0. They do not close
 the manual gate: a person must still select/drag/release root, middle, and tip,
 then select two joints and visually confirm the overlay and zeroing.
+
+Commit 2 uses `scripts/run_sim.py` as the single Python startup CLI. Add
+`--headless` to the commands above when no viewer is wanted; viewer is now the
+default. Select `--arm-source controller` for independent modal feedback,
+including mouse interaction. Historical flight gates in this document describe their
+recorded revision; current short GUI/SITL verification is recorded in
+[the simulation debugging index](simulation_architecture.md).

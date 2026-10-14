@@ -3,7 +3,7 @@
 This module is imported only for an explicitly requested interactive viewer,
 so headless and ordinary environment imports do not depend on GLFW/GLX.
 MuJoCo's native selection/perturb UI supplies mouse intent; the adapter clears
-all native wrenches, accepts only the configured terminal body, hard-clamps
+native wrenches, filters configured arm targets and the UAV, hard-clamps
 the force, and returns an ordinary :class:`InteractionCommand`.
 """
 
@@ -44,6 +44,7 @@ class Px4InteractionViewer:
             aviary.data,
             key_callback=lambda keycode: self._events.put(int(keycode)),
         )
+        self._uav_body_id = mujoco.mj_name2id(aviary.model, mujoco.mjtObj.mjOBJ_BODY, "drone0")
         self._closed = False
         self._sequence = 0
         self.paused = False
@@ -159,11 +160,15 @@ class Px4InteractionViewer:
     def _body_name(self, body_id: int):
         if body_id is None:
             return None
+        if body_id == self._uav_body_id:
+            return "drone0"
         if self.catalog is not None:
             return self.catalog.segment_for_body(body_id).body_name
         return self.force_applier.body_name
 
     def _site_name(self, body_id: int):
+        if body_id == self._uav_body_id:
+            return None
         if body_id is None:
             return None
         if body_id == self.force_applier.body_id:
@@ -173,7 +178,10 @@ class Px4InteractionViewer:
     def _update_selection(self, selected: int) -> None:
         if self._drag_body_id is not None:
             return
-        if selected in self.allowed_body_ids:
+        if self.config.interaction_mode == "mouse_force" and selected == self._uav_body_id and selected > 0:
+            self._selected_body_id = selected
+            self._selection_rejection = None
+        elif selected in self.allowed_body_ids:
             self._selected_body_id = selected
             self._selection_rejection = None
             if self.joint_keyboard is not None:
@@ -233,6 +241,35 @@ class Px4InteractionViewer:
         released = self._released_pending
         self._released_pending = False
         command = None
+        if (
+            self.config.interaction_mode == "mouse_force" and self.is_running
+            and selected > 0 and (
+                selected == self._uav_body_id or (
+                    selected in self.allowed_body_ids
+                    and not np.any(native[selected, :3])
+                    and np.any(native[selected, 3:])
+                )
+            )
+            and self._drag_body_id is None and not self.emergency_stopped
+        ):
+            wrench = native[selected].copy()
+            force, clipped = clamp_norm(wrench[:3], self.config.interaction_max_force_n)
+            if clipped:
+                wrench *= np.linalg.norm(force) / np.linalg.norm(wrench[:3])
+            active = bool(np.any(wrench))
+            self.aviary.data.xfrc_applied[selected] = wrench
+            command = InteractionCommand(
+                timestamp_us=timestamp_us, sequence=self._sequence,
+                mode=InteractionMode.EXTERNAL_FORCE, frame=InteractionFrame.WORLD_ENU,
+                target_body=self._body_name(selected), target_body_id=selected, target_site=None,
+                force_n=tuple(wrench[:3]), generated_torque_nm=tuple(wrench[3:]),
+                point_world_m=tuple(self.aviary.data.xipos[selected]),
+                active=active, clipped=clipped, source="native_mouse_wrench",
+                released=not active and self._last_command is not None and self._last_command.active,
+            )
+            self._last_command = command
+            self._update_overlay(command)
+            return command
         if self.config.interaction_mode == "mouse_force" and self.is_running:
             candidate = (
                 self._drag_body_id
@@ -368,7 +405,7 @@ class Px4InteractionViewer:
             command.target_body or self._body_name(self._selected_body_id) or "none"
         )
         association = "joint=-; sites=-"
-        if self.catalog is not None and target_name != "none":
+        if self.catalog is not None and target_name not in ("none", "drone0"):
             segment = self.catalog.segment_for_body(target_name)
             parent_joint = self.catalog.joint_for_body(segment.body_id)
             association = (

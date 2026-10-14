@@ -535,6 +535,9 @@ def test_short_viewer_launcher_dry_run_presets_and_safe_passthrough(
         ],
         cwd="/", env=env, text=True, capture_output=True, check=True,
     )
+    assert "scripts/run_sim.py" in result.stdout
+    assert "--uav-source px4" in result.stdout
+    assert f"--arm-source {'controller' if preset == 'tendon' else 'manual'}" in result.stdout
     assert f"--interaction-mode {mode}" in result.stdout
     assert "--duration 17" in result.stdout
     assert "a\\ b" in result.stdout

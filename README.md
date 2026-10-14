@@ -3,28 +3,37 @@
 CF2X UAV physics, a scaled StableSoft arm with four ideal tendon actuators,
 native MuJoCo interaction, and an optional PX4 SITL backend.
 
-The retained manual entry point is:
+Run from the repository root in the existing `mujoco_uav` environment:
 
 ```bash
-python -m multi_drone_mujoco.examples.manual_aerial_soft_arm_demo \
-  --rpm-step 100 --tension-step 0.001 --initial-rpm hover
+python scripts/run_sim.py --uav-source manual --arm-source manual
+python scripts/run_sim.py --uav-source manual --arm-source controller
+python scripts/run_sim.py --uav-source px4 --arm-source manual
+python scripts/run_sim.py --uav-source px4 --arm-source controller
 ```
 
-PX4 entry points remain `scripts/run_px4_sitl.py` and
-`scripts/run_px4_viewer.sh`. Run from the repository root in the existing
-simulation environment; use `PYTHONPATH=. python scripts/run_px4_sitl.py --help`
-to inspect PX4 options. The shell launcher accepts `mouse`, `tendon`,
-`keyboard-force`, and `joint`; PX4 must be prepared independently.
+Manual/manual is the default. Open the native **Control** panel on the right:
+four `r#_thrust_N` sliders command rotor thrust and four `t#_tension_N`
+sliders command tendon tension. Manual UAV control has no stabilization.
+Space pauses/resumes the manual loop; `.` steps, Backspace resets, Q closes.
+Automatic groups hold their latest valid command before every physics substep;
+manual groups retain the native slider values.
+
+Use `--headless --duration 0.025 --export-xml /tmp/uav_arm.xml` for a short
+run and XML export. Inspect other options with `python scripts/run_sim.py --help`.
+PX4 selections connect to a prepared peer; `--launch-owned-px4` explicitly
+starts an installed compatible PX4. `scripts/run_px4_viewer.sh` remains a
+small convenience wrapper: `mouse`, `keyboard-force`, and `joint` select
+px4/manual; `tendon` selects px4/controller.
 
 See [simulation architecture and debugging index](docs/simulation_architecture.md)
-for model parameters, XML export, current call chains, and cleanup scope;
+for parameters, call chains, commands and actual verification;
 see [PX4 operations](docs/px4_sitl_operations.md) for the supported SITL workflow.
 
-Commit 1 retains fixed arm attachment and RPM/external-force rotor physics.
-Unified startup, independent control sources, native slider ownership, and a
-two-DOF root joint remain future work. Historical RL task environments,
-training demos, GPU batching, parameter scans, and report generators have been
-retired. Packaging remains in `pyproject.toml` and `setup.py`.
+The arm attachment remains fixed with eight internal ball joints. A passive
+two-axis root attachment belongs to Commit 3. Historical RL task environments,
+training demos, GPU batching, scans and report generators have been retired.
+Packaging remains in `pyproject.toml` and `setup.py`.
 
 ## Citation
 

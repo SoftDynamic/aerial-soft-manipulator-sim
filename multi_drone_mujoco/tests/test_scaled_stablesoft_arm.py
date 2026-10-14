@@ -532,7 +532,7 @@ def test_environment_passes_explicit_integrator_and_timestep_to_builder():
             == mujoco.mjtIntegrator.mjINT_IMPLICITFAST
         )
         assert env.model.opt.timestep == pytest.approx(1.0 / 2400)
-        assert env.model.nu == 0
+        assert env.model.nu == 4
         assert env.model.ntendon == 4
     finally:
         env.close()
@@ -624,10 +624,11 @@ def test_scaled_stablesoft_xml_compiles_with_expected_counts():
     assert model.ngeom == 19
     assert model.nsite == 80
     assert model.ntendon == 4
-    assert model.nu == 0
+    assert model.nu == 4
     assert model.nsensor == 10
-    assert actuator is None or len(actuator) == 0
-    assert "<actuator>" not in xml
+    assert len(actuator) == 4
+    assert all(element.tag == "general" for element in actuator)
+    assert "<actuator>" in xml
     assert "<muscle" not in xml
     assert "<motor" not in xml
     assert "mocap=" not in xml
@@ -1048,7 +1049,7 @@ def test_scaled_stablesoft_none_preserves_baseline_model():
     assert model.ngeom == 9
     assert model.nsite == 5
     assert model.ntendon == 0
-    assert model.nu == 0
+    assert model.nu == 4
     assert "scaled_stablesoft_arm" not in xml
     assert "<tendon>" not in xml
-    assert "<actuator>" not in xml
+    assert "<actuator>" in xml

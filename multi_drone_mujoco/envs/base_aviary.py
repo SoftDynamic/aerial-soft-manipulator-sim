@@ -79,6 +79,8 @@ class BaseAviary(gym.Env):
             IdealTendonTensionSpec
         ] = None,
         integrator: str = "RK4",
+        uav_source: str = "px4",
+        arm_source: str = "manual",
     ):
         """Initialize the aviary.
 
@@ -135,6 +137,15 @@ class BaseAviary(gym.Env):
             MuJoCo integrator name passed unchanged to the MJCF builder.
         """
         super().__init__()
+        if uav_source not in ("manual", "px4") or arm_source not in ("manual", "controller"):
+            raise ValueError("sources must be manual|px4 and manual|controller")
+        if arm_source == "controller" and scaled_stablesoft_tendon_drive is None:
+            raise ValueError("arm controller requires the active tendon model")
+        self.uav_source, self.arm_source = uav_source, arm_source
+        self._rotor_thrust_command_n = None
+        self._rotor_rpm_command = np.zeros((num_drones, 4))
+        self._rotors_armed = False
+        self._automatic_tendon_command_n = None
 
         if enable_3g_payload or passive_arm is not None or scaled_stablesoft_arm is not None:
             if physics != Physics.MJC:
@@ -273,6 +284,22 @@ class BaseAviary(gym.Env):
         )
         self.model = mujoco.MjModel.from_xml_string(self._generated_xml)
         self.data = mujoco.MjData(self.model)
+        self.ROTOR_ACTUATOR_NAMES = mjcf_build.rotor_actuator_names
+        rotor_addresses = []
+        for drone_index, names in enumerate(self.ROTOR_ACTUATOR_NAMES):
+            addresses = []
+            for rotor_index, name in enumerate(names):
+                actuator = self.model.actuator(name)
+                site_id = self.model.site(f"drone{drone_index}_prop{rotor_index}").id
+                if (
+                    self.model.actuator_trntype[actuator.id] != mujoco.mjtTrn.mjTRN_SITE
+                    or self.model.actuator_trnid[actuator.id, 0] != site_id
+                    or self.model.actuator_ctrlnum[actuator.id] != 1
+                ):
+                    raise ValueError(f"invalid rotor site transmission: {name}")
+                addresses.append(int(self.model.actuator_ctrladr[actuator.id]))
+            rotor_addresses.append(addresses)
+        self.ROTOR_CONTROL_ADDRESSES = np.asarray(rotor_addresses, dtype=int)
         if scaled_stablesoft_tendon_drive is None:
             self.SCALED_STABLESOFT_TENDON_BINDINGS = ()
         else:
@@ -361,15 +388,54 @@ class BaseAviary(gym.Env):
             drive,
         )
         self._scaled_stablesoft_tension_command_n = values
+        if self.arm_source == "controller":
+            self._automatic_tendon_command_n = values
         return values
 
     ############################################################################
+
+    def set_rotor_rpm_command(self, rpm, *, armed=True):
+        """Cache PX4 RPM as rotor thrust; manual sliders never enter this cache."""
+        if self.uav_source != "px4":
+            raise RuntimeError("manual rotor controls are owned by native sliders")
+        rpm = np.asarray(rpm, dtype=float).reshape(self.NUM_DRONES, 4)
+        if not np.all(np.isfinite(rpm)):
+            raise ValueError("rotor RPM must be finite")
+        self._rotors_armed = bool(armed)
+        self._rotor_rpm_command = (
+            np.clip(rpm, 0, self.MAX_RPM) if armed else np.zeros_like(rpm)
+        )
+        self._rotor_thrust_command_n = self.KF * self._rotor_rpm_command ** 2
+
+    def apply_automatic_commands(self):
+        """Last write before each mj_step; only the selected automatic groups."""
+        if self.uav_source == "px4":
+            thrust = self._rotor_thrust_command_n if self._rotors_armed else 0.0
+            self.data.ctrl[self.ROTOR_CONTROL_ADDRESSES] = 0.0 if thrust is None else thrust
+        if self.arm_source == "controller":
+            values = self._automatic_tendon_command_n
+            if values is None or (self.uav_source == "px4" and not self._rotors_armed):
+                values = (0.0,) * len(self.SCALED_STABLESOFT_TENDON_BINDINGS)
+            for binding, value in zip(self.SCALED_STABLESOFT_TENDON_BINDINGS, values):
+                self.data.ctrl[binding.control_address] = value
+
+    def clear_automatic_commands(self):
+        """Disarm/failure/shutdown zeroing; never touches a manual actuator group."""
+        if self.uav_source == "px4":
+            self.set_rotor_rpm_command(np.zeros((self.NUM_DRONES, 4)), armed=False)
+        if self.arm_source == "controller":
+            self._automatic_tendon_command_n = (0.0,) * len(self.SCALED_STABLESOFT_TENDON_BINDINGS)
+        self.apply_automatic_commands()
 
     def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
         """Reset the environment."""
         super().reset(seed=seed)
 
         mujoco.mj_resetData(self.model, self.data)
+        self._rotor_thrust_command_n = None
+        self._rotor_rpm_command[:] = 0.0
+        self._rotors_armed = False
+        self._automatic_tendon_command_n = None
         if self.SCALED_STABLESOFT_TENDON_DRIVE_SPEC is not None:
             zeros = (0.0,) * len(
                 self.SCALED_STABLESOFT_TENDON_BINDINGS
@@ -415,7 +481,7 @@ class BaseAviary(gym.Env):
 
     ############################################################################
 
-    def step(self, action):
+    def step(self, action=None):
         """Advance the environment by one control step.
 
         Parameters
@@ -423,52 +489,47 @@ class BaseAviary(gym.Env):
         action : ndarray
             Action array, format depends on self.ACT_TYPE.
         """
-        # Preprocess action to RPMs
-        clipped_action = np.reshape(self._preprocessAction(action), (self.NUM_DRONES, 4))
+        if self.uav_source == "manual":
+            if action is not None:
+                raise ValueError("manual rotor input uses native thrust sliders, not RPM actions")
+            clipped_action = np.sqrt(np.clip(
+                self.data.ctrl[self.ROTOR_CONTROL_ADDRESSES], 0, self.KF * self.MAX_RPM ** 2
+            ) / self.KF)
+        else:
+            if action is not None:
+                self.set_rotor_rpm_command(self._preprocessAction(action))
+            clipped_action = self._rotor_rpm_command
 
-        # Simulation sub-steps
-        for _ in range(self.SIM_STEPS_PER_CTRL):
-            # Update kinematics between sub-steps for physics effects
-            if self.SIM_STEPS_PER_CTRL > 1 and self.PHYSICS in (
-                Physics.DYN, Physics.MJC_GND, Physics.MJC_DRAG,
-                Physics.MJC_DW, Physics.MJC_GND_DRAG_DW
-            ):
-                self._updateAndStoreKinematicInformation()
-
-            # Apply physics for each drone
-            for i in range(self.NUM_DRONES):
-                if self.PHYSICS == Physics.MJC:
-                    self._physics(clipped_action[i, :], i)
-                elif self.PHYSICS == Physics.DYN:
-                    self._dynamics(clipped_action[i, :], i)
-                elif self.PHYSICS == Physics.MJC_GND:
-                    self._physics(clipped_action[i, :], i)
-                    self._groundEffect(clipped_action[i, :], i)
-                elif self.PHYSICS == Physics.MJC_DRAG:
-                    self._physics(clipped_action[i, :], i)
-                    self._drag(self.last_clipped_action[i, :], i)
-                elif self.PHYSICS == Physics.MJC_DW:
-                    self._physics(clipped_action[i, :], i)
-                    self._downwash(i)
-                elif self.PHYSICS == Physics.MJC_GND_DRAG_DW:
-                    self._physics(clipped_action[i, :], i)
-                    self._groundEffect(clipped_action[i, :], i)
-                    self._drag(self.last_clipped_action[i, :], i)
-                    self._downwash(i)
-
-                # Apply wind disturbance if configured
-                if self._wind_field is not None:
-                    body_id = mujoco.mj_name2id(
-                        self.model, mujoco.mjtObj.mjOBJ_BODY, f"drone{i}")
-                    wind_force = self._wind_field.get_force(
-                        dt=self.SIM_TIMESTEP, position=self.pos[i], velocity=self.vel[i])
-                    self.data.xfrc_applied[body_id, :3] += wind_force
-
-            # Step MuJoCo (unless using explicit dynamics)
-            if self.PHYSICS != Physics.DYN:
-                mujoco.mj_step(self.model, self.data)
-
-            self.last_clipped_action = clipped_action
+        # Native mouse input persists for this control interval, independently of
+        # propulsion. Each substep starts from the same wrench, not an accumulation.
+        native_wrenches = self.data.xfrc_applied.copy()
+        try:
+            for _ in range(self.SIM_STEPS_PER_CTRL):
+                self.data.xfrc_applied[:] = native_wrenches
+                if self.SIM_STEPS_PER_CTRL > 1 and self.PHYSICS != Physics.MJC:
+                    self._updateAndStoreKinematicInformation()
+                for i in range(self.NUM_DRONES):
+                    if self.PHYSICS == Physics.DYN:
+                        if self.uav_source == "manual":
+                            raise ValueError("native rotor sliders require MuJoCo physics")
+                        self._dynamics(clipped_action[i], i)
+                    if self.PHYSICS in (Physics.MJC_GND, Physics.MJC_GND_DRAG_DW):
+                        self._groundEffect(clipped_action[i], i)
+                    if self.PHYSICS in (Physics.MJC_DRAG, Physics.MJC_GND_DRAG_DW):
+                        self._drag(self.last_clipped_action[i], i)
+                    if self.PHYSICS in (Physics.MJC_DW, Physics.MJC_GND_DRAG_DW):
+                        self._downwash(i)
+                    if self._wind_field is not None:
+                        body_id = self.model.body(f"drone{i}").id
+                        self.data.xfrc_applied[body_id, :3] += self._wind_field.get_force(
+                            dt=self.SIM_TIMESTEP, position=self.pos[i], velocity=self.vel[i]
+                        )
+                if self.PHYSICS != Physics.DYN:
+                    self.apply_automatic_commands()
+                    mujoco.mj_step(self.model, self.data)
+                self.last_clipped_action = clipped_action
+        finally:
+            self.data.xfrc_applied[:] = 0.0
 
         # Update kinematic state
         self._updateAndStoreKinematicInformation()
@@ -490,52 +551,6 @@ class BaseAviary(gym.Env):
     ############################################################################
     # PHYSICS IMPLEMENTATIONS
     ############################################################################
-
-    def _physics(self, rpm, nth_drone):
-        """Apply forces/torques from RPMs using MuJoCo's external force API.
-
-        Parameters
-        ----------
-        rpm : ndarray (4,)
-            RPMs of the 4 motors.
-        nth_drone : int
-            Drone index.
-        """
-        forces = np.array(rpm ** 2) * self.KF
-        torques = np.array(rpm ** 2) * self.KM
-        if self.DRONE_MODEL == DroneModel.RACE:
-            torques = -torques
-
-        # Net z-torque from motor reaction torques
-        z_torque = -torques[0] + torques[1] - torques[2] + torques[3]
-
-        # Total thrust (all motors push up in body frame)
-        total_thrust = np.sum(forces)
-
-        # Torques from thrust differences
-        if self.DRONE_MODEL == DroneModel.CF2X or self.DRONE_MODEL == DroneModel.RACE:
-            x_torque = (forces[0] + forces[1] - forces[2] - forces[3]) * (self.L / np.sqrt(2))
-            y_torque = (-forces[0] + forces[1] + forces[2] - forces[3]) * (self.L / np.sqrt(2))
-        else:  # CF2P
-            x_torque = (forces[1] - forces[3]) * self.L
-            y_torque = (-forces[0] + forces[2]) * self.L
-
-        # Apply force and torque to drone body via xfrc_applied
-        body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, f"drone{nth_drone}")
-
-        # Get rotation matrix for body frame
-        rot_mat = np.array(self.data.xmat[body_id]).reshape(3, 3)
-
-        # Thrust in world frame (body z-axis * total_thrust)
-        thrust_world = rot_mat @ np.array([0, 0, total_thrust])
-
-        # Torques in world frame
-        torque_body = np.array([x_torque, y_torque, z_torque])
-        torque_world = rot_mat @ torque_body
-
-        # Apply via xfrc_applied [fx, fy, fz, tx, ty, tz]
-        self.data.xfrc_applied[body_id, :3] = thrust_world
-        self.data.xfrc_applied[body_id, 3:] = torque_world
 
     def _groundEffect(self, rpm, nth_drone):
         """Ground effect model (Shi et al., 2019).
@@ -674,8 +689,6 @@ class BaseAviary(gym.Env):
             # Quaternion to RPY
             self.rpy[i] = self._quatToRPY(self.quat[i])
 
-        # Clear xfrc_applied for next step
-        self.data.xfrc_applied[:] = 0
 
     def _quatToRPY(self, quat):
         """Convert quaternion [w,x,y,z] to roll-pitch-yaw."""

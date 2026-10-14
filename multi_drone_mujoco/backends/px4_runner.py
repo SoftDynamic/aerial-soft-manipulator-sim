@@ -111,6 +111,9 @@ class Px4RunnerConfig:
     spool_target_height_offset_m: float = 1.0
     release_transition_s: float = 1.0
     plant: str = "rigid"
+    arm_source: str = "manual"
+    arm_acceleration_m_s2: Tuple[float, float] = (0.0, 0.0)
+    visual_mode: str = "mesh"
     plant_step_freq_hz: Optional[int] = None
     interaction_mode: str = "disabled"
     interaction_script: Optional[Path] = None
@@ -140,6 +143,17 @@ class Px4RunnerConfig:
         object.__setattr__(self, "mode", mode)
         if self.plant not in ("rigid", "passive_arm", "active_arm"):
             raise ValueError("plant must be rigid, passive_arm, or active_arm")
+        if self.arm_source not in ("manual", "controller"):
+            raise ValueError("arm_source must be manual or controller")
+        if self.arm_source == "controller" and self.plant != "active_arm":
+            raise ValueError("arm controller requires plant='active_arm'")
+        if self.interaction_mode == "tendon_modal" and self.arm_source != "controller":
+            raise ValueError("tendon_modal input requires arm_source='controller'")
+        if self.visual_mode not in ("mesh", "cylinder"):
+            raise ValueError("visual_mode must be mesh or cylinder")
+        object.__setattr__(self, "arm_acceleration_m_s2", finite_tuple(
+            "arm_acceleration_m_s2", self.arm_acceleration_m_s2, 2
+        ))
         interaction_modes = (
             "disabled", "replay", "mouse_force", "keyboard_force", "tendon_modal",
             "joint_torque",
@@ -399,7 +413,6 @@ class Px4MujocoRunner:
         self._last_interaction_command = None
         self._interaction_viewer = None
         self._interaction_events = []
-        self._has_tendon_interaction = False
 
     @classmethod
     def create_default(cls, config: Px4RunnerConfig) -> "Px4MujocoRunner":
@@ -407,6 +420,7 @@ class Px4MujocoRunner:
         from multi_drone_mujoco.envs.base_aviary import BaseAviary
         from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
             scaled_stablesoft_baseline_spec,
+            ScaledStableSoftVisualSpec,
         )
         from multi_drone_mujoco.models.components.tendon_drive import (
             IdealTendonTensionSpec,
@@ -431,6 +445,10 @@ class Px4MujocoRunner:
             gui=(config.gui and config.interaction_mode == "disabled"),
             act_type=ActionType.RPM,
             scaled_stablesoft_arm=arm_spec,
+            scaled_stablesoft_visual=(
+                ScaledStableSoftVisualSpec(mode=config.visual_mode) if arm_spec else None
+            ),
+            uav_source="px4", arm_source=config.arm_source,
             scaled_stablesoft_tendon_drive=tendon_drive,
             integrator=integrator,
         )
@@ -572,8 +590,11 @@ class Px4MujocoRunner:
                         time.sleep(1.0 / 60.0)
                     if self._interaction_viewer.exit_requested:
                         break
-                    interaction = self._prepare_interaction_command(interaction)
-                    self._record_interaction_command(interaction, elapsed_s, metrics)
+                    if self._interaction_timeline is not None:
+                        interaction = self._sample_interaction(elapsed_s, metrics)
+                    else:
+                        interaction = self._prepare_interaction_command(interaction)
+                        self._record_interaction_command(interaction, elapsed_s, metrics)
                 else:
                     interaction = self._sample_interaction(elapsed_s, metrics)
                 if interaction.released:
@@ -592,6 +613,11 @@ class Px4MujocoRunner:
                         self.flight_control.poll()
                     self._last_rpm = np.asarray(result.rotor_speed.rpm)
                     self._final_actuator_armed = result.rotor_speed.armed
+                    self.aviary.set_rotor_rpm_command(
+                        self._last_rpm, armed=result.rotor_speed.armed
+                    )
+                    if not result.rotor_speed.armed:
+                        self.aviary.clear_automatic_commands()
                     metrics.max_rpm = max(
                         metrics.max_rpm, float(np.max(self._last_rpm))
                     )
@@ -600,20 +626,22 @@ class Px4MujocoRunner:
                     ))
                     rotor_values += self._last_rpm.size
                     if not result.advance_physics:
+                        self.aviary.clear_automatic_commands()
                         metrics.outcome = result.health.state.value
                         metrics.exit_detail = result.health.detail
                         break
                 if tendon_stride is not None and (offset - 1) % tendon_stride == 0:
                     self._update_tendon_controller(elapsed_s, metrics, interaction)
                 try:
-                    if self._force_applier is not None:
+                    if self._force_applier is not None and interaction.source != "native_mouse_wrench":
                         self._force_applier.apply(interaction)
-                    self.aviary.step(self._last_rpm)
+                    self.aviary.step()
                 finally:
                     if self._force_applier is not None:
                         self._force_applier.clear()
                     if self._interaction_viewer is not None:
                         self._interaction_viewer.after_step()
+                        self._interaction_viewer.render_only()
                 if self.config.gui:
                     self.aviary.render()
                 position = np.asarray(self.aviary.pos[0], dtype=float)
@@ -779,6 +807,7 @@ class Px4MujocoRunner:
             self._interaction_viewer.reset()
         self._last_interaction_command = None
         self.truth_source.reset(self.aviary)
+        self._setup_tendon_controller()
 
     def pause(self) -> None:
         self.backend.pause()
@@ -797,6 +826,7 @@ class Px4MujocoRunner:
         if self._interaction_viewer is not None:
             self._interaction_viewer.close()
             self._interaction_viewer = None
+        self.aviary.clear_automatic_commands()
         try:
             self.backend.close()
         finally:
@@ -818,8 +848,6 @@ class Px4MujocoRunner:
         self._force_applier = None
         self._last_interaction_command = None
         self._interaction_events = []
-        self._has_tendon_interaction = False
-        self._has_tendon_interaction = self.config.interaction_mode == "tendon_modal"
         if self.config.interaction_mode == "disabled":
             return
         manifest = self.aviary.SCALED_STABLESOFT_ARM_MANIFEST
@@ -851,11 +879,9 @@ class Px4MujocoRunner:
             self._interaction_timeline = DeterministicInteractionTimeline.from_json(
                 self.config.interaction_script
             )
-            self._has_tendon_interaction = any(
-                event.mode is InteractionMode.TENDON_MODAL
-                for event in self._interaction_timeline.events
-            )
             for event in self._interaction_timeline.events:
+                if event.mode is InteractionMode.TENDON_MODAL and self.config.arm_source != "controller":
+                    raise ValueError("tendon-modal replay requires arm_source='controller'")
                 if (
                     event.mode is InteractionMode.TENDON_MODAL
                     and self.config.plant != "active_arm"
@@ -980,6 +1006,8 @@ class Px4MujocoRunner:
         self, command: InteractionCommand
     ) -> InteractionCommand:
         if self._force_applier is None:
+            return command
+        if command.source == "native_mouse_wrench":
             return command
         return self._force_applier.enrich(command)
 
@@ -1111,6 +1139,8 @@ class Px4MujocoRunner:
             max_ramp_rpm = max(max_ramp_rpm, max(result.rotor_speed.rpm))
             if result.rotor_speed.armed and min(result.rotor_speed.rpm) >= release_rpm:
                 self._last_rpm = np.asarray(result.rotor_speed.rpm)
+                self._final_actuator_armed = result.rotor_speed.armed
+                self.aviary.set_rotor_rpm_command(self._last_rpm, armed=result.rotor_speed.armed)
                 return
         raise RuntimeError(
             "PX4 did not reach the bounded release thrust during armed ramp; "
@@ -1122,7 +1152,7 @@ class Px4MujocoRunner:
         """Ramp the offboard altitude to a safe height, then disarm on ground."""
         control = self.flight_control
         control.request_auto_land()
-        if self.config.plant == "active_arm":
+        if self.config.arm_source == "controller":
             self.aviary.set_scaled_stablesoft_tension_command((0.0,) * 4)
         plant_dt_s = 1.0 / self.config.plant_step_freq_hz
         px4_stride = self.config.plant_step_freq_hz // self.config.control_freq_hz
@@ -1159,11 +1189,15 @@ class Px4MujocoRunner:
                 truth = self.truth_source.sample(self.aviary, dt_s)
                 result = self.backend.step(Px4BackendInput(truth, clock, dt_s))
                 if not result.advance_physics:
+                    self.aviary.clear_automatic_commands()
                     raise RuntimeError(f"PX4 landing lockstep failed: {result.health.detail}")
                 self._last_rpm = np.asarray(result.rotor_speed.rpm)
                 self._final_actuator_armed = result.rotor_speed.armed
+                self.aviary.set_rotor_rpm_command(self._last_rpm, armed=result.rotor_speed.armed)
+                if not result.rotor_speed.armed:
+                    self.aviary.clear_automatic_commands()
                 control.poll()
-            self.aviary.step(self._last_rpm)
+            self.aviary.step()
             if self._interaction_viewer is not None:
                 self._interaction_viewer.render_only()
             elif self.config.gui:
@@ -1222,26 +1256,13 @@ class Px4MujocoRunner:
 
 
     def _setup_tendon_controller(self) -> None:
-        if self.config.plant != "active_arm":
+        self._tendon_controller = None
+        if self.config.arm_source != "controller":
             return
         from multi_drone_mujoco.control.scaled_stablesoft_bending_control import (
-            make_scaled_stablesoft_bending_controller,
+            initialize_scaled_stablesoft_feedback,
         )
-
-        bindings = self.aviary.SCALED_STABLESOFT_TENDON_BINDINGS
-        self._tendon_ids = np.asarray(
-            [binding.tendon_id for binding in bindings], dtype=int
-        )
-        self._tendon_controller = make_scaled_stablesoft_bending_controller(
-            [binding.tendon_name for binding in bindings]
-        )
-        self._tendon_controller.reset(
-            self.aviary.data.ten_length[self._tendon_ids],
-            self.aviary.data.ten_velocity[self._tendon_ids],
-        )
-        if self._has_tendon_interaction:
-            self._tendon_controller.enable()
-        self.aviary.set_scaled_stablesoft_tension_command((0.0,) * 4)
+        self._tendon_controller, self._tendon_ids = initialize_scaled_stablesoft_feedback(self.aviary)
 
     def _update_tendon_controller(
         self,
@@ -1256,16 +1277,16 @@ class Px4MujocoRunner:
             and interaction.mode is InteractionMode.TENDON_MODAL
             and interaction.active
         )
-        if not self._has_tendon_interaction:
+        if not self._final_actuator_armed:
             self.aviary.set_scaled_stablesoft_tension_command((0.0,) * 4)
             return
-        command = interaction.tendon_acceleration_m_s2 if interactive_tendon else (0.0, 0.0)
-        tension = self._tendon_controller.update_bending_acceleration(
-            command,
-            self.aviary.data.ten_length[self._tendon_ids],
-            self.aviary.data.ten_velocity[self._tendon_ids],
+        from multi_drone_mujoco.control.scaled_stablesoft_bending_control import (
+            update_scaled_stablesoft_feedback,
         )
-        self.aviary.set_scaled_stablesoft_tension_command(tension)
+        command = interaction.tendon_acceleration_m_s2 if interactive_tendon else self.config.arm_acceleration_m_s2
+        tension = update_scaled_stablesoft_feedback(
+            self.aviary, self._tendon_controller, self._tendon_ids, command
+        )
         self._tendon_updates += 1
         maximum = max(tension)
         metrics.max_tendon_tension_n = max(metrics.max_tendon_tension_n, maximum)
@@ -1336,7 +1357,11 @@ class Px4MujocoRunner:
             "metrics": asdict(metrics),
             "last_state": self._last_state,
             "final_rpm": tuple(float(value) for value in self._last_rpm),
-            "final_tendon_tension_n": tuple(float(value) for value in self.aviary.data.ctrl),
+            "final_tendon_tension_n": tuple(
+                float(self.aviary.data.ctrl[b.control_address])
+                for b in self.aviary.SCALED_STABLESOFT_TENDON_BINDINGS
+            ),
+            "final_actuator_armed": self._final_actuator_armed,
             "px4_log_tail": (
                 self.launcher.log_text if self.launcher is not None else None
             ),
