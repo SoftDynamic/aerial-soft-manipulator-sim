@@ -28,7 +28,7 @@ from multi_drone_mujoco.backends.cf2x_px4 import (
     cf2x_normalized_to_pwm_config,
     cf2x_pwm_to_rpm_config,
 )
-from multi_drone_mujoco.backends.contracts import SimulatorClock
+from multi_drone_mujoco.backends.contracts import SimulatorClock, finite_tuple
 from multi_drone_mujoco.backends.lockstep import (
     LockstepBootstrapConfig,
     LockstepConfig,
@@ -72,13 +72,6 @@ WMM_30N_120E_NED_GAUSS = (
 )
 
 
-def _finite_tuple(name: str, values, length: int) -> Tuple[float, ...]:
-    result = tuple(float(value) for value in values)
-    if len(result) != length or not all(math.isfinite(value) for value in result):
-        raise ValueError(f"{name} must contain {length} finite values")
-    return result
-
-
 @dataclass(frozen=True)
 class Px4RunnerConfig:
     """Explicit runtime configuration; network and process launch have no defaults."""
@@ -118,13 +111,7 @@ class Px4RunnerConfig:
     spool_target_height_offset_m: float = 1.0
     release_transition_s: float = 1.0
     plant: str = "rigid"
-    disturbance_time_s: Optional[float] = None
-    disturbance_velocity_enu_m_s: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     plant_step_freq_hz: Optional[int] = None
-    tendon_profile: str = "disabled"
-    tendon_start_time_s: float = 5.0
-    tendon_reference_l1_m: float = 100e-6
-    disconnect_time_s: Optional[float] = None
     interaction_mode: str = "disabled"
     interaction_script: Optional[Path] = None
     interaction_target_body: Optional[str] = None
@@ -153,14 +140,6 @@ class Px4RunnerConfig:
         object.__setattr__(self, "mode", mode)
         if self.plant not in ("rigid", "passive_arm", "active_arm"):
             raise ValueError("plant must be rigid, passive_arm, or active_arm")
-        if self.tendon_profile not in (
-            "disabled", "x_pos", "x_neg", "diagonal", "reverse"
-        ):
-            raise ValueError(
-                "tendon_profile must be disabled, x_pos, x_neg, diagonal, or reverse"
-            )
-        if self.plant != "active_arm" and self.tendon_profile != "disabled":
-            raise ValueError("a tendon profile requires plant='active_arm'")
         interaction_modes = (
             "disabled", "replay", "mouse_force", "keyboard_force", "tendon_modal",
             "joint_torque",
@@ -182,8 +161,6 @@ class Px4RunnerConfig:
             raise ValueError("replay interaction requires interaction_script")
         if self.interaction_mode != "replay" and self.interaction_script is not None:
             raise ValueError("interaction_script is only valid in replay mode")
-        if self.tendon_profile != "disabled" and self.interaction_mode == "tendon_modal":
-            raise ValueError("interactive tendon mode cannot be combined with tendon_profile")
         if self.interaction_force_release != "immediate":
             raise ValueError("only immediate interaction force release is supported")
         if self.interaction_target_policy not in ("arm_segments", "single"):
@@ -250,20 +227,6 @@ class Px4RunnerConfig:
         if self.plant == "active_arm" and plant_frequency % 240:
             raise ValueError("active_arm plant_step_freq_hz must be divisible by 240 Hz")
         object.__setattr__(self, "plant_step_freq_hz", plant_frequency)
-        tendon_start = float(self.tendon_start_time_s)
-        tendon_reference = float(self.tendon_reference_l1_m)
-        if not math.isfinite(tendon_start) or tendon_start < 0.0:
-            raise ValueError("tendon_start_time_s must be finite and non-negative")
-        if (
-            self.plant == "active_arm"
-            and self.tendon_profile != "disabled"
-            and tendon_start >= self.duration_s
-        ):
-            raise ValueError("tendon_start_time_s must be inside the flight duration")
-        if not math.isfinite(tendon_reference) or not 0.0 < tendon_reference <= 300e-6:
-            raise ValueError("tendon_reference_l1_m must be in (0, 300e-6]")
-        object.__setattr__(self, "tendon_start_time_s", tendon_start)
-        object.__setattr__(self, "tendon_reference_l1_m", tendon_reference)
         for name in (
             "duration_s", "handshake_timeout_s", "actuator_timeout_s",
             "bootstrap_final_timeout_s",
@@ -316,22 +279,12 @@ class Px4RunnerConfig:
         object.__setattr__(self, "spool_target_height_offset_m", spool_offset)
         if self.landing_descent_s > self.landing_duration_s:
             raise ValueError("landing_descent_s cannot exceed landing_duration_s")
-        object.__setattr__(self, "initial_position_enu_m", _finite_tuple(
+        object.__setattr__(self, "initial_position_enu_m", finite_tuple(
             "initial_position_enu_m", self.initial_position_enu_m, 3
         ))
-        object.__setattr__(self, "target_position_enu_m", _finite_tuple(
+        object.__setattr__(self, "target_position_enu_m", finite_tuple(
             "target_position_enu_m", self.target_position_enu_m, 3
         ))
-        object.__setattr__(self, "disturbance_velocity_enu_m_s", _finite_tuple(
-            "disturbance_velocity_enu_m_s", self.disturbance_velocity_enu_m_s, 3
-        ))
-        if self.disturbance_time_s is not None:
-            disturbance_time = float(self.disturbance_time_s)
-            if not math.isfinite(disturbance_time) or not 0.0 < disturbance_time < self.duration_s:
-                raise ValueError("disturbance_time_s must be inside the flight duration")
-            if not any(self.disturbance_velocity_enu_m_s):
-                raise ValueError("a disturbance time requires a non-zero velocity impulse")
-            object.__setattr__(self, "disturbance_time_s", disturbance_time)
         object.__setattr__(self, "log_dir", Path(self.log_dir))
         if self.autopilot_dir is not None:
             object.__setattr__(self, "autopilot_dir", Path(self.autopilot_dir))
@@ -360,15 +313,6 @@ class Px4RunnerConfig:
                     f"owned PX4 instance {self.px4_instance} connects to port "
                     f"{expected_port}, not {self.bind_port}"
                 )
-        if self.disconnect_time_s is not None:
-            disconnect_time = float(self.disconnect_time_s)
-            if not math.isfinite(disconnect_time) or not 0.0 < disconnect_time < self.duration_s:
-                raise ValueError("disconnect_time_s must be inside the flight duration")
-            if not self.launch_owned_px4:
-                raise ValueError(
-                    "disconnect injection requires an explicitly owned PX4 process"
-                )
-            object.__setattr__(self, "disconnect_time_s", disconnect_time)
 
 
 @dataclass
@@ -401,11 +345,6 @@ class Px4RunMetrics:
     flight_warnings: Tuple[str, ...] = ()
     max_arm_tip_relative_displacement_m: float = 0.0
     max_contact_count: int = 0
-    disturbance_applied: bool = False
-    disconnect_injected: bool = False
-    disturbance_recovery_time_s: Optional[float] = None
-    disturbance_baseline_error_m: Optional[float] = None
-    max_post_disturbance_error_m: float = 0.0
     max_tendon_tension_n: float = 0.0
     tendon_saturation_ratio: float = 0.0
     max_tendon_modal_error_m: float = 0.0
@@ -422,15 +361,6 @@ class Px4RunMetrics:
     interaction_recovery_time_s: Optional[float] = None
     min_altitude_m: Optional[float] = None
     max_tilt_rad: float = 0.0
-    initial_mechanical_energy_j: Optional[float] = None
-    final_flight_mechanical_energy_j: Optional[float] = None
-    max_mechanical_energy_j: Optional[float] = None
-    rotor_work_j: float = 0.0
-    positive_rotor_work_j: float = 0.0
-    max_abs_rotor_power_w: float = 0.0
-    tendon_work_j: float = 0.0
-    positive_tendon_work_j: float = 0.0
-    max_abs_tendon_power_w: float = 0.0
     exit_detail: str = ""
     final_position_enu_m: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     log_path: Optional[str] = None
@@ -455,12 +385,11 @@ class Px4MujocoRunner:
         self.launcher = launcher
         self.flight_control = flight_control
         self._closed = False
-        self._trace = []
+        self._last_state = None
         self._final_actuator_armed = False
         self._last_rpm = np.zeros(4, dtype=float)
         self._tendon_controller = None
         self._tendon_ids = None
-        self._tendon_output_ids = None
         self._tendon_updates = 0
         self._tendon_saturated_updates = 0
         self._started_utc = None
@@ -470,13 +399,14 @@ class Px4MujocoRunner:
         self._last_interaction_command = None
         self._interaction_viewer = None
         self._interaction_events = []
+        self._has_tendon_interaction = False
 
     @classmethod
     def create_default(cls, config: Px4RunnerConfig) -> "Px4MujocoRunner":
         """Create the rigid-CF2X plant and all replaceable PX4 adapters."""
         from multi_drone_mujoco.envs.base_aviary import BaseAviary
         from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
-            ScaledStableSoftArmSpec,
+            scaled_stablesoft_baseline_spec,
         )
         from multi_drone_mujoco.models.components.tendon_drive import (
             IdealTendonTensionSpec,
@@ -487,11 +417,7 @@ class Px4MujocoRunner:
         tendon_drive = None
         integrator = "RK4"
         if config.plant != "rigid":
-            arm_spec = ScaledStableSoftArmSpec(
-                joint_stiffness=0.003086,
-                joint_damping=None,
-                target_damping_ratio=0.3,
-            )
+            arm_spec = scaled_stablesoft_baseline_spec()
             integrator = "implicitfast"
         if config.plant == "active_arm":
             tendon_drive = IdealTendonTensionSpec(max_tension=0.010)
@@ -575,19 +501,15 @@ class Px4MujocoRunner:
         saturated_values = 0
         rotor_values = 0
         max_rpy = np.zeros(3)
-        disturbance_exceeded = False
         recovery_candidate_s = None
         initial_arm_tip_relative = None
         dt_s = 1.0 / self.config.control_freq_hz
         plant_dt_s = 1.0 / self.config.plant_step_freq_hz
         try:
             self.aviary.reset(seed=self.config.random_seed)
-            self._setup_tendon_controller()
             self._setup_interaction()
+            self._setup_tendon_controller()
             self._open_interactive_viewer()
-            mechanical_energy = self._mechanical_energy()
-            metrics.initial_mechanical_energy_j = mechanical_energy
-            metrics.max_mechanical_energy_j = mechanical_energy
             initial_arm_tip_relative = self._arm_tip_relative()
             self.truth_source.reset(self.aviary)
             transport = self.backend.transport
@@ -656,35 +578,7 @@ class Px4MujocoRunner:
                     interaction = self._sample_interaction(elapsed_s, metrics)
                 if interaction.released:
                     recovery_candidate_s = None
-                if (
-                    self.config.disturbance_time_s is not None
-                    and not metrics.disturbance_applied
-                    and elapsed_s >= self.config.disturbance_time_s
-                ):
-                    self._apply_velocity_impulse(
-                        self.config.disturbance_velocity_enu_m_s
-                    )
-                    metrics.disturbance_applied = True
-                    metrics.disturbance_baseline_error_m = float(np.linalg.norm(
-                        np.asarray(self.aviary.pos[0], dtype=float) - target
-                    ))
-                    self._trace.append({
-                        "phase": "disturbance",
-                        "time_s": elapsed_s,
-                        "velocity_impulse_enu_m_s": self.config.disturbance_velocity_enu_m_s,
-                    })
                 if (offset - 1) % px4_stride == 0:
-                    if (
-                        self.config.disconnect_time_s is not None
-                        and not metrics.disconnect_injected
-                        and elapsed_s >= self.config.disconnect_time_s
-                    ):
-                        self.launcher.close()
-                        metrics.disconnect_injected = True
-                        self._trace.append({
-                            "phase": "disconnect_injection",
-                            "time_s": elapsed_s,
-                        })
                     px4_sequence += 1
                     clock = self._clock(px4_sequence, start_timestamp_us)
                     if self.config.auto_flight:
@@ -711,18 +605,6 @@ class Px4MujocoRunner:
                         break
                 if tendon_stride is not None and (offset - 1) % tendon_stride == 0:
                     self._update_tendon_controller(elapsed_s, metrics, interaction)
-                rotor_power = self._rotor_mechanical_power(self._last_rpm)
-                tendon_power = self._tendon_mechanical_power()
-                metrics.rotor_work_j += rotor_power * plant_dt_s
-                metrics.positive_rotor_work_j += max(0.0, rotor_power) * plant_dt_s
-                metrics.max_abs_rotor_power_w = max(
-                    metrics.max_abs_rotor_power_w, abs(rotor_power)
-                )
-                metrics.tendon_work_j += tendon_power * plant_dt_s
-                metrics.positive_tendon_work_j += max(0.0, tendon_power) * plant_dt_s
-                metrics.max_abs_tendon_power_w = max(
-                    metrics.max_abs_tendon_power_w, abs(tendon_power)
-                )
                 try:
                     if self._force_applier is not None:
                         self._force_applier.apply(interaction)
@@ -732,12 +614,6 @@ class Px4MujocoRunner:
                         self._force_applier.clear()
                     if self._interaction_viewer is not None:
                         self._interaction_viewer.after_step()
-                mechanical_energy = self._mechanical_energy()
-                if mechanical_energy is not None:
-                    metrics.final_flight_mechanical_energy_j = mechanical_energy
-                    metrics.max_mechanical_energy_j = max(
-                        metrics.max_mechanical_energy_j, mechanical_energy
-                    )
                 if self.config.gui:
                     self.aviary.render()
                 position = np.asarray(self.aviary.pos[0], dtype=float)
@@ -752,23 +628,6 @@ class Px4MujocoRunner:
                 metrics.max_position_error_m = max(
                     metrics.max_position_error_m, error
                 )
-                if (
-                    metrics.disturbance_applied
-                ):
-                    metrics.max_post_disturbance_error_m = max(
-                        metrics.max_post_disturbance_error_m, error
-                    )
-                    baseline = metrics.disturbance_baseline_error_m
-                    if error >= baseline + 0.02:
-                        disturbance_exceeded = True
-                    if (
-                        disturbance_exceeded
-                        and metrics.disturbance_recovery_time_s is None
-                        and error <= baseline + 0.005
-                    ):
-                        metrics.disturbance_recovery_time_s = (
-                            elapsed_s - self.config.disturbance_time_s
-                        )
                 max_rpy = np.maximum(
                     max_rpy, np.abs(np.asarray(self.aviary.rpy[0], dtype=float))
                 )
@@ -800,7 +659,7 @@ class Px4MujocoRunner:
                     )
                 metrics.max_contact_count = max(
                     metrics.max_contact_count,
-                    int(getattr(getattr(self.aviary, "data", None), "ncon", 0)),
+                    int(self.aviary.data.ncon),
                 )
                 if metrics.physics_steps % max(1, self.config.plant_step_freq_hz // 50) == 0:
                     flight_health = (
@@ -811,7 +670,7 @@ class Px4MujocoRunner:
                         self._tendon_controller.state
                         if self._tendon_controller is not None else None
                     )
-                    self._trace.append({
+                    self._last_state = {
                         "time_s": metrics.physics_steps * plant_dt_s,
                         "position_enu_m": tuple(float(value) for value in self.aviary.pos[0]),
                         "rpy_enu_flu_rad": tuple(float(value) for value in self.aviary.rpy[0]),
@@ -842,15 +701,12 @@ class Px4MujocoRunner:
                             None if tendon_state is None else
                             tendon_state.tension_command_n
                         ),
-                        "mechanical_energy_j": mechanical_energy,
-                        "rotor_mechanical_power_w": rotor_power,
-                        "tendon_mechanical_power_w": tendon_power,
                         "interaction": interaction.as_dict(),
                         "px4_local_position_ned_m": (
                             flight_health.local_position_ned_m
                             if flight_health is not None else None
                         ),
-                    })
+                    }
             else:
                 metrics.outcome = "completed"
             metrics.simulation_duration_s = metrics.physics_steps * plant_dt_s
@@ -962,9 +818,11 @@ class Px4MujocoRunner:
         self._force_applier = None
         self._last_interaction_command = None
         self._interaction_events = []
+        self._has_tendon_interaction = False
+        self._has_tendon_interaction = self.config.interaction_mode == "tendon_modal"
         if self.config.interaction_mode == "disabled":
             return
-        manifest = getattr(self.aviary, "SCALED_STABLESOFT_ARM_MANIFEST", None)
+        manifest = self.aviary.SCALED_STABLESOFT_ARM_MANIFEST
         self._interaction_catalog = ArmInteractionCatalog.discover(
             self.aviary.model, manifest
         )
@@ -992,6 +850,10 @@ class Px4MujocoRunner:
         if self.config.interaction_mode == "replay":
             self._interaction_timeline = DeterministicInteractionTimeline.from_json(
                 self.config.interaction_script
+            )
+            self._has_tendon_interaction = any(
+                event.mode is InteractionMode.TENDON_MODAL
+                for event in self._interaction_timeline.events
             )
             for event in self._interaction_timeline.events:
                 if (
@@ -1024,7 +886,7 @@ class Px4MujocoRunner:
         """Return a terminal body/site pair without numeric-ID configuration."""
         import mujoco
 
-        manifest = getattr(self.aviary, "SCALED_STABLESOFT_ARM_MANIFEST", None)
+        manifest = self.aviary.SCALED_STABLESOFT_ARM_MANIFEST
         body_name = self.config.interaction_target_body
         site_name = self.config.interaction_target_site
         if site_name is None and body_name is None:
@@ -1307,14 +1169,14 @@ class Px4MujocoRunner:
             elif self.config.gui:
                 self.aviary.render()
             if (index + 1) % max(1, self.config.plant_step_freq_hz // 20) == 0:
-                self._trace.append({
+                self._last_state = {
                     "phase": "landing",
                     "time_s": (index + 1) * plant_dt_s,
                     "position_enu_m": tuple(float(value) for value in self.aviary.pos[0]),
                     "velocity_enu_m_s": tuple(float(value) for value in self.aviary.vel[0]),
                     "setpoint_local_enu_m": tuple(float(value) for value in setpoint),
                     "rpm": tuple(float(value) for value in self._last_rpm),
-                })
+                }
             if disarm_requested and not result.rotor_speed.armed:
                 return index + 1
         raise RuntimeError(
@@ -1341,12 +1203,10 @@ class Px4MujocoRunner:
         return SimulatorClock(timestamp, sequence)
 
     def _plant_hover_rpm(self) -> float:
-        calibration = cf2x_27g_calibration()
-        mass = float(getattr(self.aviary, "M", calibration.mass_kg))
-        return math.sqrt(mass * 9.81 / (4.0 * calibration.kf_n_per_rpm2))
+        return float(self.aviary.HOVER_RPM)
 
     def _arm_tip_relative(self):
-        manifest = getattr(self.aviary, "SCALED_STABLESOFT_ARM_MANIFEST", None)
+        manifest = self.aviary.SCALED_STABLESOFT_ARM_MANIFEST
         if manifest is None:
             return None
         import mujoco
@@ -1360,40 +1220,17 @@ class Px4MujocoRunner:
             self.aviary.pos[0], dtype=float
         )
 
-    def _apply_velocity_impulse(self, velocity_enu_m_s) -> None:
-        """Apply one explicit translational impulse to the simulated UAV root."""
-        import mujoco
-        joint_id = mujoco.mj_name2id(
-            self.aviary.model, mujoco.mjtObj.mjOBJ_JOINT, "drone0_joint"
-        )
-        if joint_id < 0:
-            raise RuntimeError("drone0 free joint is missing")
-        dof_address = int(self.aviary.model.jnt_dofadr[joint_id])
-        self.aviary.data.qvel[dof_address:dof_address + 3] += np.asarray(
-            velocity_enu_m_s, dtype=float
-        )
-        mujoco.mj_forward(self.aviary.model, self.aviary.data)
-        self.aviary._updateAndStoreKinematicInformation()
 
     def _setup_tendon_controller(self) -> None:
         if self.config.plant != "active_arm":
             return
-        from multi_drone_mujoco.control.ideal_tendon_tension import (
-            resolve_ideal_tendon_actuator_bindings,
-        )
         from multi_drone_mujoco.control.scaled_stablesoft_bending_control import (
             make_scaled_stablesoft_bending_controller,
         )
 
-        bindings = resolve_ideal_tendon_actuator_bindings(
-            self.aviary.model,
-            self.aviary.SCALED_STABLESOFT_ARM_MANIFEST,
-        )
+        bindings = self.aviary.SCALED_STABLESOFT_TENDON_BINDINGS
         self._tendon_ids = np.asarray(
             [binding.tendon_id for binding in bindings], dtype=int
-        )
-        self._tendon_output_ids = np.asarray(
-            [binding.output_address for binding in bindings], dtype=int
         )
         self._tendon_controller = make_scaled_stablesoft_bending_controller(
             [binding.tendon_name for binding in bindings]
@@ -1402,21 +1239,7 @@ class Px4MujocoRunner:
             self.aviary.data.ten_length[self._tendon_ids],
             self.aviary.data.ten_velocity[self._tendon_ids],
         )
-        has_replayed_tendon = (
-            self.config.interaction_mode == "replay"
-            and self.config.interaction_script is not None
-            and any(
-                event.mode is InteractionMode.TENDON_MODAL
-                for event in DeterministicInteractionTimeline.from_json(
-                    self.config.interaction_script
-                ).events
-            )
-        )
-        if (
-            self.config.tendon_profile != "disabled"
-            or self.config.interaction_mode == "tendon_modal"
-            or has_replayed_tendon
-        ):
+        if self._has_tendon_interaction:
             self._tendon_controller.enable()
         self.aviary.set_scaled_stablesoft_tension_command((0.0,) * 4)
 
@@ -1433,28 +1256,10 @@ class Px4MujocoRunner:
             and interaction.mode is InteractionMode.TENDON_MODAL
             and interaction.active
         )
-        interactive_tendon_lifecycle = (
-            self.config.interaction_mode == "tendon_modal"
-            or (
-                self._interaction_timeline is not None
-                and any(
-                    event.mode is InteractionMode.TENDON_MODAL
-                    for event in self._interaction_timeline.events
-                )
-            )
-        )
-        if self.config.tendon_profile == "disabled" and not interactive_tendon_lifecycle:
+        if not self._has_tendon_interaction:
             self.aviary.set_scaled_stablesoft_tension_command((0.0,) * 4)
             return
-        command = (
-            interaction.tendon_acceleration_m_s2
-            if interactive_tendon else
-            (
-                (0.0, 0.0)
-                if self.config.tendon_profile == "disabled"
-                else self._tendon_acceleration_command(elapsed_s)
-            )
-        )
+        command = interaction.tendon_acceleration_m_s2 if interactive_tendon else (0.0, 0.0)
         tension = self._tendon_controller.update_bending_acceleration(
             command,
             self.aviary.data.ten_length[self._tendon_ids],
@@ -1474,105 +1279,6 @@ class Px4MujocoRunner:
             metrics.max_tendon_modal_error_m, float(np.linalg.norm(error))
         )
 
-    def _tendon_acceleration_command(self, elapsed_s: float) -> Tuple[float, float]:
-        local_time = elapsed_s - self.config.tendon_start_time_s
-        if local_time < 0.0:
-            return (0.0, 0.0)
-        control_frequency = 240
-        timestep = 1.0 / control_frequency
-        tick = int(math.floor(local_time * control_frequency + 1e-9))
-        max_acceleration = 0.04
-        max_velocity = 0.002
-        reference = self.config.tendon_reference_l1_m
-        pulse_ticks = max(
-            int(math.ceil(
-                math.sqrt(reference / max_acceleration) / timestep - 1e-12
-            )),
-            int(math.ceil(
-                reference / (max_velocity * timestep) - 1e-12
-            )),
-        )
-        acceleration = reference / (pulse_ticks * timestep) ** 2
-        directions = {
-            "x_pos": np.asarray((1.0, 0.0)),
-            "x_neg": np.asarray((-1.0, 0.0)),
-            "diagonal": np.asarray((0.5, 0.5)),
-            "reverse": np.asarray((1.0, 0.0)),
-        }
-        direction = directions[self.config.tendon_profile]
-        if tick < pulse_ticks:
-            return tuple(acceleration * direction)
-        if tick < 2 * pulse_ticks:
-            return tuple(-acceleration * direction)
-        if self.config.tendon_profile != "reverse":
-            return (0.0, 0.0)
-        reverse_tick = tick - (2 * pulse_ticks + control_frequency)
-        reverse_distance = 2.0 * reference
-        reverse_pulse_ticks = max(
-            int(math.ceil(
-                math.sqrt(reverse_distance / max_acceleration) / timestep
-                - 1e-12
-            )),
-            int(math.ceil(
-                reverse_distance / (max_velocity * timestep) - 1e-12
-            )),
-        )
-        reverse_acceleration = (
-            reverse_distance / (reverse_pulse_ticks * timestep) ** 2
-        )
-        if 0 <= reverse_tick < reverse_pulse_ticks:
-            return tuple(-reverse_acceleration * direction)
-        if reverse_pulse_ticks <= reverse_tick < 2 * reverse_pulse_ticks:
-            return tuple(reverse_acceleration * direction)
-        return (0.0, 0.0)
-
-    def _mechanical_energy(self) -> Optional[float]:
-        model = getattr(self.aviary, "model", None)
-        data = getattr(self.aviary, "data", None)
-        if model is None or data is None:
-            return None
-        import mujoco
-        mujoco.mj_energyPos(model, data)
-        mujoco.mj_energyVel(model, data)
-        return float(np.sum(data.energy))
-
-    def _rotor_mechanical_power(self, rpm) -> float:
-        """Return signed rigid-body power from the exact BaseAviary wrench."""
-        model = getattr(self.aviary, "model", None)
-        data = getattr(self.aviary, "data", None)
-        if model is None or data is None or not hasattr(self.aviary, "KF"):
-            return 0.0
-        import mujoco
-        body_id = mujoco.mj_name2id(
-            model, mujoco.mjtObj.mjOBJ_BODY, "drone0"
-        )
-        if body_id < 0:
-            raise RuntimeError("drone0 body is missing")
-        rpm = np.asarray(rpm, dtype=float)
-        forces = rpm ** 2 * float(self.aviary.KF)
-        reaction = rpm ** 2 * float(self.aviary.KM)
-        total_thrust = float(np.sum(forces))
-        arm = float(self.aviary.L) / math.sqrt(2.0)
-        torque_body = np.asarray((
-            (forces[0] + forces[1] - forces[2] - forces[3]) * arm,
-            (-forces[0] + forces[1] + forces[2] - forces[3]) * arm,
-            -reaction[0] + reaction[1] - reaction[2] + reaction[3],
-        ))
-        rotation = np.asarray(data.xmat[body_id], dtype=float).reshape(3, 3)
-        thrust_world = rotation @ np.asarray((0.0, 0.0, total_thrust))
-        torque_world = rotation @ torque_body
-        return float(
-            thrust_world @ np.asarray(self.aviary.vel[0], dtype=float)
-            + torque_world @ np.asarray(self.aviary.ang_v[0], dtype=float)
-        )
-
-    def _tendon_mechanical_power(self) -> float:
-        data = getattr(self.aviary, "data", None)
-        if data is None or self._tendon_output_ids is None:
-            return 0.0
-        force = np.asarray(data.actuator_force)[self._tendon_output_ids]
-        velocity = np.asarray(data.actuator_velocity)[self._tendon_output_ids]
-        return float(force @ velocity)
 
     def _spool_target_local_enu(self) -> Tuple[float, float, float]:
         """Temporary demand used only while the MuJoCo plant is held fixed."""
@@ -1594,7 +1300,7 @@ class Px4MujocoRunner:
         path = log_dir / f"px4-run-{timestamp}.json"
         metrics.log_path = str(path)
         payload: Dict[str, Any] = {
-            "schema_version": 3,
+            "schema_version": 4,
             "started_utc": self._started_utc,
             "ended_utc": datetime.now(timezone.utc).isoformat(),
             "project_git_commit": self._git_value(Path.cwd()),
@@ -1616,7 +1322,7 @@ class Px4MujocoRunner:
                 self.config.interaction_script
             ),
             "model_xml_sha256": hashlib.sha256(
-                getattr(self.aviary, "_generated_xml", "").encode("utf-8")
+                self.aviary._generated_xml.encode("utf-8")
             ).hexdigest(),
             "px4_launch_command": (
                 self.launcher.command_display if self.launcher is not None else None
@@ -1628,7 +1334,9 @@ class Px4MujocoRunner:
             "airframe": 10016,
             "plant_calibration": asdict(cf2x_27g_calibration()),
             "metrics": asdict(metrics),
-            "trace": self._trace,
+            "last_state": self._last_state,
+            "final_rpm": tuple(float(value) for value in self._last_rpm),
+            "final_tendon_tension_n": tuple(float(value) for value in self.aviary.data.ctrl),
             "px4_log_tail": (
                 self.launcher.log_text if self.launcher is not None else None
             ),

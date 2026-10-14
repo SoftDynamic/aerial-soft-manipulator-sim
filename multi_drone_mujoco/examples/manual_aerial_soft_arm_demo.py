@@ -9,6 +9,7 @@ mouse perturbations.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass
 import math
 import queue
@@ -22,12 +23,9 @@ import mujoco.viewer
 import numpy as np
 
 from multi_drone_mujoco.envs.base_aviary import BaseAviary
-from multi_drone_mujoco.examples.scaled_stablesoft_passive_demo import (
-    _closing_viewer,
-    _spec,
-)
 from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ScaledStableSoftVisualSpec,
+    scaled_stablesoft_baseline_spec,
 )
 from multi_drone_mujoco.models.components.tendon_drive import (
     IdealTendonTensionSpec,
@@ -220,6 +218,28 @@ class _ManualPerturbationAviary(BaseAviary):
         self.data.xfrc_applied[body_id] += (
             self._manual_uav_viewer_wrenches[nth_drone]
         )
+
+
+@contextmanager
+def _closing_viewer(
+    viewer,
+    *,
+    shutdown_grace_s=2.0,
+    sleep_fn=time.sleep,
+):
+    """Close a viewer once, then let its native teardown finish."""
+    try:
+        yield viewer
+    finally:
+        close = getattr(viewer, "close", None)
+        if callable(close):
+            try:
+                close()
+            finally:
+                # MuJoCo's passive viewer closes on a native background
+                # thread.  Keep model/data alive until GLFW/X11 teardown has
+                # completed before run_viewer reaches env.close().
+                sleep_fn(shutdown_grace_s)
 
 
 def _required_id(model, object_type, name: str) -> int:
@@ -523,7 +543,7 @@ def _make_env(*, sim_freq: int, ctrl_freq: int, visual_mode: str):
         vision_attributes=False,
         act_type=ActionType.RPM,
         render_mode=None,
-        scaled_stablesoft_arm=_spec(),
+        scaled_stablesoft_arm=scaled_stablesoft_baseline_spec(),
         scaled_stablesoft_visual=ScaledStableSoftVisualSpec(mode=visual_mode),
         scaled_stablesoft_tendon_drive=IdealTendonTensionSpec(
             max_tension=VERIFIED_ACTIVE_MAX_TENSION_N

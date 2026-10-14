@@ -15,7 +15,7 @@ from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     build_scaled_stablesoft_arm_mjcf,
     solid_cylinder_diagonal_inertia,
 )
-from multi_drone_mujoco.models.mjcf_builder import build_aviary_xml
+from multi_drone_mujoco.models.mjcf_builder import build_aviary_mjcf
 from multi_drone_mujoco.utils.enums import ActionType, DroneModel, Physics
 
 
@@ -75,7 +75,7 @@ def _build_xml(spec=None, **overrides):
         "scaled_stablesoft_visual": CYLINDER_VISUAL,
     }
     kwargs.update(overrides)
-    return build_aviary_xml(**kwargs)
+    return build_aviary_mjcf(**kwargs).xml
 
 
 def _make_env(**overrides):
@@ -1032,13 +1032,13 @@ def test_scaled_stablesoft_environment_mass_and_default_height():
 
 
 def test_scaled_stablesoft_none_preserves_baseline_model():
-    xml = build_aviary_xml(
+    xml = build_aviary_mjcf(
         num_drones=1,
         drone_model=DroneModel.CF2X,
         init_xyzs=np.array([[0.0, 0.0, 1.0]]),
         init_rpys=np.zeros((1, 3)),
         scaled_stablesoft_arm=None,
-    )
+    ).xml
     model = mujoco.MjModel.from_xml_string(xml)
 
     assert model.nq == 7

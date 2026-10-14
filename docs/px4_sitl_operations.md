@@ -77,13 +77,10 @@ local rigid flight is:
 For an externally managed remote PX4, omit `--launch-owned-px4` and
 `--autopilot-dir`, select `--mode remote`, and bind to the explicitly chosen
 reachable interface. Active-arm runs add `--plant active_arm`, use the passive
-arm parameter file, and retain `--plant-step-freq 1200`; tendon profiles are
-`disabled`, `x_pos`, `x_neg`, `diagonal`, and `reverse`.
-
-`--disconnect-time SECONDS` is a deliberate fault injection and is accepted
-only with an explicitly owned local PX4. It closes that child at the specified
-simulation time, expects a transport disconnect, applies safe rotors, and
-stops before another physics step. It is not a general process-kill feature.
+arm parameter file, and retain `--plant-step-freq 1200`. Tendon commands come
+from keyboard interaction or deterministic replay. Experimental tendon pulse,
+velocity-impulse, and owned-process disconnect-injection options were retired
+in Commit 1; normal communication failure handling is unchanged.
 
 ## Local source launch
 
@@ -115,6 +112,12 @@ networking or an explicit TCP route only after checking which side owns the
 listener. Never use `latest` in a recorded validation.
 
 ## Frozen real-flight gates (P8-P10)
+
+The following P8-P10 evidence is historical. Its schema-3 traces, energy/work
+reports, pulse profiles, and injected-disturbance options are not the current
+runtime interface. Current schema-4 logs retain operational metrics, events,
+the latest state and final rotor/tendon commands; no unbounded state trace is
+accumulated. These historical runs are not a verification of Commit 1.
 
 These criteria are frozen before the first real PX4 experiment. A run is
 invalid if the PX4 tag/commit, parameter set, model hash, simulator frequency,
@@ -357,7 +360,7 @@ Schema-3 output JSON contains a top-level `events` list reconstructed from the
 accepted per-step commands. Pass that output log itself to
 `--interaction-script` to replay the exact interaction command stream. The log
 also contains parameter/event/model hashes, actuator calibration, frequencies,
-50 Hz state trace, metrics, PX4 log tail, and exit state.
+latest state, operational metrics, final rotor/tendon commands, PX4 log tail, and exit state (schema 4).
 
 ### Verified P11 evidence (2026-09-01)
 
@@ -446,7 +449,8 @@ above, interact, press Esc, and verify landing plus natural process exit:
 
 ```bash
 DISPLAY=:1 /home/ustc/miniconda3/envs/mujoco_uav/bin/python \
-  -m multi_drone_mujoco.examples.scaled_stablesoft_passive_demo
+  -m multi_drone_mujoco.examples.manual_aerial_soft_arm_demo \
+  --rpm-step 100 --tension-step 0.001
 ```
 
 `GLXBadContext/GLXBadDrawable` was previously reproduced during context

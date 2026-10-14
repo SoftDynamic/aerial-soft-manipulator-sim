@@ -15,9 +15,9 @@ from multi_drone_mujoco.models.components.tendon_drive import (
     build_ideal_tendon_tension_actuator_xml,
     validate_ideal_tendon_tension_command,
 )
-from multi_drone_mujoco.tests._scaled_stablesoft_actuation import (
-    resolve_tendon_actuator_bindings,
-    write_tension_command,
+from multi_drone_mujoco.control.ideal_tendon_tension import (
+    resolve_ideal_tendon_actuator_bindings,
+    write_ideal_tendon_tension_command,
 )
 from multi_drone_mujoco.tests._scaled_stablesoft_dynamics import (
     MOUNT_Z,
@@ -69,11 +69,13 @@ def _name_id(model, object_type, name):
 
 
 def _actuator_bindings(fixture):
-    return resolve_tendon_actuator_bindings(fixture)
+    return resolve_ideal_tendon_actuator_bindings(fixture.model, fixture.manifest)
 
 
 def _write_tension_command(fixture, command):
-    return write_tension_command(fixture, command, _drive_spec())
+    bindings = _actuator_bindings(fixture)
+    values = write_ideal_tendon_tension_command(fixture.data, bindings, command, _drive_spec())
+    return values, bindings
 
 
 def _warning_count(data):

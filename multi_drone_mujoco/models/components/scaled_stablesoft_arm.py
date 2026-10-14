@@ -501,6 +501,15 @@ class ScaledStableSoftArmSpec:
         return 0.0
 
 
+def scaled_stablesoft_baseline_spec() -> ScaledStableSoftArmSpec:
+    """Construct the existing damped StableSoft baseline used by both runners."""
+    return ScaledStableSoftArmSpec(
+        joint_stiffness=0.003086,
+        joint_damping=None,
+        target_damping_ratio=0.3,
+    )
+
+
 @dataclass(frozen=True)
 class ArmMjcfManifest:
     """Stable names and paths emitted for one scaled StableSoft arm."""

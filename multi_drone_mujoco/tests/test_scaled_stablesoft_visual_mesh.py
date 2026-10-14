@@ -16,15 +16,9 @@ from multi_drone_mujoco.models.components.scaled_stablesoft_arm import (
     ScaledStableSoftVisualSpec,
     build_scaled_stablesoft_arm_mjcf,
 )
-from multi_drone_mujoco.models.mjcf_builder import build_aviary_xml
+from multi_drone_mujoco.models.mjcf_builder import build_aviary_mjcf
 from multi_drone_mujoco.models.components.tendon_drive import (
     IdealTendonTensionSpec,
-)
-from multi_drone_mujoco.tests._scaled_stablesoft_actuation import (
-    ActiveTendonRunConfig,
-    TendonCommandRunConfig,
-    run_single_tendon_characterization,
-    run_tendon_command_characterization,
 )
 from multi_drone_mujoco.tests._scaled_stablesoft_dynamics import (
     build_fixed_arm_fixture,
@@ -108,7 +102,7 @@ def _aviary_xml(visual=None):
     kwargs = {}
     if visual is not None:
         kwargs["scaled_stablesoft_visual"] = visual
-    return build_aviary_xml(
+    return build_aviary_mjcf(
         num_drones=1,
         drone_model=DroneModel.CF2X,
         init_xyzs=np.asarray([[0.0, 0.0, 1.0]]),
@@ -117,21 +111,9 @@ def _aviary_xml(visual=None):
         integrator=INTEGRATOR,
         timestep=1.0 / SIM_FREQ,
         **kwargs,
-    )
+    ).xml
 
 
-def _maximum_errors(left, right, fields):
-    return {
-        field: float(
-            np.max(
-                np.abs(
-                    np.asarray(getattr(left, field))
-                    - np.asarray(getattr(right, field))
-                )
-            )
-        )
-        for field in fields
-    }
 
 
 def test_visual_spec_defaults_to_mesh_and_validates_mode():
@@ -383,46 +365,3 @@ def test_zero_input_mesh_and_cylinder_trajectories_are_float_exact():
     cylinder = _zero_input_trace(CYLINDER_VISUAL)
     for left, right in zip(mesh, cylinder):
         np.testing.assert_allclose(left, right, rtol=0.0, atol=0.0)
-
-
-@pytest.mark.parametrize(
-    "runner,config",
-    (
-        (
-            run_single_tendon_characterization,
-            ActiveTendonRunConfig("xp_yp", 0.01, sim_freq=SIM_FREQ),
-        ),
-        (
-            run_tendon_command_characterization,
-            TendonCommandRunConfig(
-                (0.01, 0.01, 0.0, 0.0),
-                sim_freq=SIM_FREQ,
-            ),
-        ),
-    ),
-    ids=("single-xp-yp", "multi-positive-x"),
-)
-def test_active_mesh_and_cylinder_trajectories_are_float_exact(runner, config):
-    mesh = runner(config, visual=MESH_VISUAL)
-    cylinder = runner(config, visual=CYLINDER_VISUAL)
-    fields = (
-        "qpos",
-        "qvel_rad_s",
-        "tip_world_m",
-        "tip_displacement_m",
-        "joint_rotation_vectors_rad",
-        "composite_rotation_vectors_rad",
-        "tendon_length_m",
-        "tendon_velocity_m_s",
-        "actuator_force_n",
-        "qfrc_actuator_nm",
-        "generalized_actuator_power_w",
-        "actuator_space_power_w",
-        "tendon_coordinate_power_w",
-        "command_tendon_power_w",
-        "warning_counts",
-        "contacts",
-    )
-    errors = _maximum_errors(mesh, cylinder, fields)
-    assert all(error == 0.0 for error in errors.values()), errors
-    assert mesh.safety == cylinder.safety

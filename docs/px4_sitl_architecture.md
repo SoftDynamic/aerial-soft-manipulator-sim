@@ -263,7 +263,11 @@ step and 50 µN·m hard default limit are conservative relative to the compiled
 `--allow-unverified-joint-torque` opt-in. It is neither tendon actuation nor
 evidence of real soft-arm actuator performance.
 
-Logs use schema 3 and include the command line, PX4 expected/actual commit,
+Logs use schema 4 and include the command line, PX4 expected/actual commit,
 parameter/event/model SHA-256 values, actuator calibration, all scheduler
-frequencies, command trace, link/estimator state, recovery metrics, force and
+frequencies, latest command/state snapshot, link/estimator state, recovery metrics, force and
 tendon maxima, saturation, contact, landing, and exit state.
+
+Commit 1 retired experimental pulse/impulse/disconnect injection and energy/work
+reporting; manual/PX4 entry points and lockstep/control behavior remain. See
+[the current debugging index](simulation_architecture.md).

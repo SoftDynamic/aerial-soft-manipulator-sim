@@ -89,6 +89,15 @@ def build_aviary_mjcf(
             "A scaled StableSoft tendon drive requires a scaled "
             "StableSoft arm"
         )
+    if scaled_stablesoft_tendon_drive is not None and not isinstance(
+        scaled_stablesoft_tendon_drive, IdealTendonTensionSpec
+    ):
+        raise TypeError("scaled_stablesoft_tendon_drive must be an IdealTendonTensionSpec")
+    if enable_3g_payload:
+        if drone_model != DroneModel.CF2X:
+            raise ValueError("The 3 g rigid payload is only supported for DroneModel.CF2X")
+        if num_drones != 1:
+            raise ValueError("The 3 g rigid payload benchmark requires num_drones == 1")
     if passive_arm is not None:
         if drone_model != DroneModel.CF2X:
             raise ValueError("The passive arm is only supported for DroneModel.CF2X")
@@ -110,6 +119,9 @@ def build_aviary_mjcf(
                 "The scaled StableSoft arm cannot be combined with the 3 g rigid payload"
             )
 
+    # Validate the model combination before interpreting the initial pose arrays.
+    init_xyzs = np.asarray(init_xyzs).reshape(num_drones, 3)
+    init_rpys = np.asarray(init_rpys).reshape(num_drones, 3)
     meshdir = str(CF2_MESH_DIR)
     params = DRONE_PARAMS[drone_model]
 
@@ -324,40 +336,3 @@ def build_aviary_mjcf(
         xml=xml,
         scaled_stablesoft_arm_manifest=scaled_stablesoft_arm_manifest,
     )
-
-
-def build_aviary_xml(
-    num_drones: int,
-    drone_model: DroneModel,
-    init_xyzs: np.ndarray,
-    init_rpys: np.ndarray,
-    obstacles: bool = False,
-    vision: bool = False,
-    timestep: float = 1 / 240,
-    integrator: str = "RK4",
-    enable_3g_payload: bool = False,
-    passive_arm: Optional[PassiveArmSpec] = None,
-    scaled_stablesoft_arm: Optional[ScaledStableSoftArmSpec] = None,
-    scaled_stablesoft_visual: Optional[ScaledStableSoftVisualSpec] = None,
-    scaled_stablesoft_tendon_drive: Optional[
-        IdealTendonTensionSpec
-    ] = None,
-) -> str:
-    """Generate MuJoCo XML while preserving the legacy string interface."""
-    return build_aviary_mjcf(
-        num_drones=num_drones,
-        drone_model=drone_model,
-        init_xyzs=init_xyzs,
-        init_rpys=init_rpys,
-        obstacles=obstacles,
-        vision=vision,
-        timestep=timestep,
-        integrator=integrator,
-        enable_3g_payload=enable_3g_payload,
-        passive_arm=passive_arm,
-        scaled_stablesoft_arm=scaled_stablesoft_arm,
-        scaled_stablesoft_visual=scaled_stablesoft_visual,
-        scaled_stablesoft_tendon_drive=(
-            scaled_stablesoft_tendon_drive
-        ),
-    ).xml

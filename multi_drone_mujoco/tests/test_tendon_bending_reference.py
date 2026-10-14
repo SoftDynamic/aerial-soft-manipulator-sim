@@ -3,10 +3,6 @@
 import numpy as np
 import pytest
 
-from multi_drone_mujoco.control.tendon_acceleration_controller import (
-    TendonAccelerationControllerConfig,
-    TendonContractionAccelerationController,
-)
 from multi_drone_mujoco.control.tendon_bending_reference import (
     BendingModalReferenceIntegrator,
     BendingReferenceConfig,
@@ -68,18 +64,3 @@ def test_l1_projection_covers_edges_vertices_and_interior():
     for vector, expected in (((0.1, 0.2), (0.1, 0.2)), ((2.0, 0.0), (1.0, 0.0)), ((1.0, 1.0), (0.5, 0.5)), ((-2.0, 1.0), (-1.0, 0.0))):
         actual, _ = project_l1_ball(vector, 1.0)
         np.testing.assert_allclose(actual, expected, atol=1e-15)
-
-
-def test_unclipped_integration_matches_existing_c2_a_reference_exactly():
-    coordinates = TendonModalCoordinates.from_tendon_names(NAMES)
-    modal = _integrator()
-    modal.reset(np.zeros(4))
-    legacy = TendonContractionAccelerationController(
-        TendonAccelerationControllerConfig(0.1, 0.0, 0.0, 1.0, 2.0, -3.0, 3.0, 0.01)
-    )
-    legacy.reset(np.ones(4), np.zeros(4))
-    for command in ((0.2, -0.1), (0.0, 0.0), (-0.1, 0.15)):
-        state = modal.update_bending(command)
-        legacy.update(coordinates.bending_to_tendon(command), np.ones(4), np.zeros(4))
-        np.testing.assert_allclose(state.tendon_velocity_reference_m_s, legacy.state.contraction_velocity_reference_m_s, atol=1e-15)
-        np.testing.assert_allclose(state.tendon_contraction_reference_m, legacy.state.contraction_reference_m, atol=1e-15)

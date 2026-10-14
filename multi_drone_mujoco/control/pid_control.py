@@ -10,33 +10,22 @@ import numpy as np
 class PIDControl:
     """PID controller for a single Crazyflie drone."""
 
-    def __init__(self, env=None):
+    def __init__(self, env):
         """Initialize PID gains.
 
         Parameters
         ----------
-        env : BaseAviary, optional
+        env : BaseAviary
             Environment instance to read drone parameters from.
         """
-        if env is not None:
-            self.GRAVITY = env.G
-            self.MASS = env.M
-            self.KF = env.KF
-            self.KM = env.KM
-            self.L = env.L
-            self.HOVER_RPM = env.HOVER_RPM
-            self.MAX_RPM = env.MAX_RPM
-            self.J = env.J
-        else:
-            # Default CF2X parameters
-            self.GRAVITY = 9.81
-            self.MASS = 0.027
-            self.KF = 3.16e-10
-            self.KM = 7.94e-12
-            self.L = 0.0397
-            self.HOVER_RPM = np.sqrt((self.MASS * self.GRAVITY) / (4 * self.KF))
-            self.MAX_RPM = self.HOVER_RPM * 1.5
-            self.J = np.diag([1.4e-5, 1.4e-5, 2.17e-5])
+        self.GRAVITY = env.G
+        self.MASS = env.M
+        self.KF = env.KF
+        self.KM = env.KM
+        self.L = env.L
+        self.HOVER_RPM = env.HOVER_RPM
+        self.MAX_RPM = env.MAX_RPM
+        self.J = env.J
 
         # Position PID gains (tuned for MuJoCo Crazyflie dynamics)
         # Produces desired acceleration in m/s^2; critically damped

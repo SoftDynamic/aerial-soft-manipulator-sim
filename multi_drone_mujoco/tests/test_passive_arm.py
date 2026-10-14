@@ -8,7 +8,7 @@ import pytest
 
 from multi_drone_mujoco.envs.base_aviary import BaseAviary
 from multi_drone_mujoco.models.components.passive_arm import PassiveArmSpec
-from multi_drone_mujoco.models.mjcf_builder import build_aviary_xml
+from multi_drone_mujoco.models.mjcf_builder import build_aviary_mjcf
 from multi_drone_mujoco.utils.enums import ActionType, DroneModel, Physics
 
 
@@ -223,7 +223,7 @@ def test_builder_rejects_unsupported_passive_arm_combinations(overrides, match):
     }
     kwargs.update(overrides)
     with pytest.raises(ValueError, match=match):
-        build_aviary_xml(**kwargs)
+        build_aviary_mjcf(**kwargs).xml
 
 
 @pytest.mark.parametrize(
@@ -257,13 +257,13 @@ def test_passive_arm_structure_and_discrete_parameter_mapping(num_segments):
         initial_bend_x=INITIAL_BEND_X,
         initial_bend_y=INITIAL_BEND_Y,
     )
-    model = mujoco.MjModel.from_xml_string(build_aviary_xml(
+    model = mujoco.MjModel.from_xml_string(build_aviary_mjcf(
         num_drones=1,
         drone_model=DroneModel.CF2X,
         init_xyzs=np.array([[0.0, 0.0, 1.0]]),
         init_rpys=np.zeros((1, 3)),
         passive_arm=spec,
-    ))
+    ).xml)
 
     assert model.nq == 7 + 2 * num_segments
     assert model.nv == 6 + 2 * num_segments
@@ -501,13 +501,13 @@ def test_passive_arm_default_height_is_conservative_and_explicit_position_is_pre
 
 
 def test_passive_arm_none_preserves_baseline_model():
-    model = mujoco.MjModel.from_xml_string(build_aviary_xml(
+    model = mujoco.MjModel.from_xml_string(build_aviary_mjcf(
         num_drones=1,
         drone_model=DroneModel.CF2X,
         init_xyzs=np.array([[0.0, 0.0, 1.0]]),
         init_rpys=np.zeros((1, 3)),
         passive_arm=None,
-    ))
+    ).xml)
     assert model.nq == 7
     assert model.nv == 6
     assert model.nbody == 2

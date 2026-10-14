@@ -1,187 +1,30 @@
-# MJ-drones-gym
+# UAV + soft-arm MuJoCo simulation
 
-**MuJoCo-based multi-drone Gymnasium environments for single and multi-agent reinforcement learning of quadcopter control.**
+CF2X UAV physics, a scaled StableSoft arm with four ideal tendon actuators,
+native MuJoCo interaction, and an optional PX4 SITL backend.
 
-High-fidelity quadcopter simulation with GPU-vectorized environments, Dryden wind turbulence, domain randomization, obstacle generation, and curriculum learning — all built on [MuJoCo](https://mujoco.org/).
-
-## Features
-
-- **MuJoCo physics** — faster and more accurate than PyBullet
-- **Gymnasium API** — drop-in compatible with stable-baselines3, CleanRL, etc.
-- **Multi-drone support** — N arbitrary drones with inter-drone effects
-- **Aerodynamic effects** — ground effect, drag, downwash (individually toggleable)
-- **Multiple action types** — RPM, normalized thrust, velocity, PID waypoint
-- **Multiple observation types** — kinematics (state vector), RGB camera
-- **PID controllers** — tuned cascaded position/attitude PID (PIDControl + DSLPIDControl)
-- **Optional PX4 SITL backend** — typed lockstep, ideal sensors, configurable PWM/ESC model, local or remote transport
-- **PettingZoo multi-agent** — parallel environment wrapper for MARL
-- **7 task environments** — hover, velocity tracking, waypoint navigation, formation, racing, and more
-- **SB3 examples** — ready-to-run PPO training scripts
-
-## Installation
+The retained manual entry point is:
 
 ```bash
-git clone <this-repo>
-cd multi_drone_mujoco/
-pip install -e .          # core
-pip install -e ".[all]"   # with RL, MARL, and visualization extras
+python -m multi_drone_mujoco.examples.manual_aerial_soft_arm_demo \
+  --rpm-step 100 --tension-step 0.001 --initial-rpm hover
 ```
 
-### Requirements
-- Python ≥ 3.8
-- MuJoCo ≥ 3.0
-- Gymnasium ≥ 0.29
-- NumPy ≥ 1.21
+PX4 entry points remain `scripts/run_px4_sitl.py` and
+`scripts/run_px4_viewer.sh`. Run from the repository root in the existing
+simulation environment; use `PYTHONPATH=. python scripts/run_px4_sitl.py --help`
+to inspect PX4 options. The shell launcher accepts `mouse`, `tendon`,
+`keyboard-force`, and `joint`; PX4 must be prepared independently.
 
-## Quick Start
+See [simulation architecture and debugging index](docs/simulation_architecture.md)
+for model parameters, XML export, current call chains, and cleanup scope;
+see [PX4 operations](docs/px4_sitl_operations.md) for the supported SITL workflow.
 
-### PID Control
-
-```python
-import numpy as np
-from multi_drone_mujoco.envs.base_aviary import BaseAviary
-from multi_drone_mujoco.control.pid_control import PIDControl
-from multi_drone_mujoco.utils.enums import Physics
-
-env = BaseAviary(num_drones=1, ctrl_freq=240, sim_freq=240, physics=Physics.MJC)
-ctrl = PIDControl(env)
-env.reset()
-
-target = np.array([0.5, 0.3, 1.0])
-for _ in range(4800):
-    rpm, _, _ = ctrl.computeControl(
-        env.CTRL_TIMESTEP, env.pos[0], env.quat[0],
-        env.vel[0], env.ang_v[0], target
-    )
-    env.step(rpm.flatten())
-
-print(f"Final position error: {np.linalg.norm(env.pos[0] - target):.4f} m")
-env.close()
-```
-
-### Reinforcement Learning (SB3 PPO)
-
-```python
-from stable_baselines3 import PPO
-from multi_drone_mujoco.envs.hover_aviary import HoverAviary
-
-env = HoverAviary(ctrl_freq=48)
-model = PPO("MlpPolicy", env, verbose=1)
-model.learn(total_timesteps=500_000)
-model.save("hover_ppo")
-```
-
-### Multi-Agent RL (PettingZoo)
-
-```python
-from multi_drone_mujoco.envs.multi_agent_aviary import MultiAgentAviary
-
-env = MultiAgentAviary(num_drones=3)
-env.reset()
-actions = {agent: env.action_space(agent).sample() for agent in env.agents}
-obs, rewards, terms, truncs, infos = env.step(actions)
-```
-
-## Examples
-
-```bash
-cd multi_drone_mujoco/examples/
-python pid.py          # PID hover + velocity tracking + multi-drone
-python downwash.py     # downwash effect demonstration
-python learn.py        # SB3 PPO training (single + multi hover)
-python play.py         # visualize trained policy
-```
-
-## Environments
-
-| Environment | Obs Dim | Action | Description |
-|---|---|---|---|
-| `HoverAviary` | 12 | 4 (normalized RPM) | Hover at z=1.0 |
-| `VelocityAviary` | 16 | 4 (normalized RPM) | Track velocity commands |
-| `MultiHoverAviary` | 13×N | 4×N | N drones at different heights |
-| `FlyThroughAviary` | 18 | 4 | Navigate through waypoints |
-| `FormationAviary` | 18×N | 4×N | Formation flying along a path |
-| `RaceAviary` | 21 | 4 | Gate racing with lap timing |
-| `MultiAgentAviary` | per-agent | per-agent | PettingZoo parallel wrapper |
-
-## Physics Modes
-
-| Mode | Description |
-|---|---|
-| `Physics.MJC` | Pure MuJoCo (force injection via xfrc_applied) |
-| `Physics.DYN` | Explicit dynamics (Euler integration) |
-| `Physics.MJC_GND` | MuJoCo + ground effect |
-| `Physics.MJC_DRAG` | MuJoCo + aerodynamic drag |
-| `Physics.MJC_DW` | MuJoCo + downwash |
-| `Physics.MJC_GND_DRAG_DW` | MuJoCo + all aerodynamic effects |
-
-## Tests
-
-```bash
-pytest multi_drone_mujoco/tests/ -v
-```
-
-PX4 remains optional. See [the architecture](docs/px4_sitl_architecture.md)
-and [operations/runbook](docs/px4_sitl_operations.md) for the fixed v1.17.0
-compatibility commit, standalone local/remote runner, parameter files, opt-in
-integration tests, and recorded P8-P10 evidence.
-
-For the active scaled StableSoft arm with an owned local PX4, the daily viewer
-command is:
-
-```bash
-./scripts/run_px4_viewer.sh mouse
-```
-
-The viewer filters selection to manifest-declared arm segments and applies a
-bounded force at the exact mouse pick point. Other presets are `tendon`,
-`keyboard-force`, and `joint`; the last is a `qfrc_applied` structural
-diagnostic, not tendon actuation evidence. Inspect the complete shell-escaped
-runner command with `--dry-run`, or append safe full-CLI overrides after `--`.
-The [operations runbook](docs/px4_sitl_operations.md#p11-interactive-arm-operation)
-contains controls, safety bounds, environment overrides, logs, and GLX
-troubleshooting.
-
-## Project Structure
-
-```
-multi_drone_mujoco/
-├── envs/
-│   ├── base_aviary.py          # Core physics engine + Gymnasium env
-│   ├── hover_aviary.py         # Single-drone hover task
-│   ├── velocity_aviary.py      # Velocity tracking task
-│   ├── multi_hover_aviary.py   # Multi-drone hover
-│   ├── fly_through_aviary.py   # Waypoint navigation
-│   ├── formation_aviary.py     # Formation flying
-│   ├── race_aviary.py          # Gate racing
-│   └── multi_agent_aviary.py   # PettingZoo wrapper
-├── control/
-│   ├── pid_control.py          # Cascaded PID controller
-│   └── dsl_pid_control.py      # Enhanced PID with anti-windup
-├── utils/
-│   ├── enums.py                # DroneModel, Physics, ActionType, etc.
-│   └── logger.py               # CSV logging + matplotlib plotting
-├── examples/
-│   ├── pid.py                  # PID control demos
-│   ├── downwash.py             # Downwash visualization
-│   ├── learn.py                # SB3 PPO training
-│   └── play.py                 # Trained model playback
-├── tests/
-│   ├── test_envs.py            # Environment tests
-│   ├── test_control.py         # Controller tests
-│   └── test_multi_agent.py     # MARL tests
-└── setup.py
-```
-
-## Differences from gym-pybullet-drones
-
-| | gym-pybullet-drones | gym-mujoco-drones |
-|---|---|---|
-| Physics | PyBullet | MuJoCo (faster, more accurate) |
-| Rendering | PyBullet GUI | MuJoCo viewer / offscreen RGB |
-| Firmware SITL | Betaflight, CF firmware | — |
-| Task environments | 2 (Hover, MultiHover) | 7 (+ velocity, waypoint, formation, race) |
-| Multi-agent | Custom | PettingZoo standard |
+Commit 1 retains fixed arm attachment and RPM/external-force rotor physics.
+Unified startup, independent control sources, native slider ownership, and a
+two-DOF root joint remain future work. Historical RL task environments,
+training demos, GPU batching, parameter scans, and report generators have been
+retired. Packaging remains in `pyproject.toml` and `setup.py`.
 
 ## Citation
 

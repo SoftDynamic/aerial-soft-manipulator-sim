@@ -136,80 +136,11 @@ class BaseAviary(gym.Env):
         """
         super().__init__()
 
-        if passive_arm is not None and scaled_stablesoft_arm is not None:
-            raise ValueError(
-                "The scaled StableSoft arm cannot be combined with the passive arm"
-            )
-        if (
-            scaled_stablesoft_visual is not None
-            and scaled_stablesoft_arm is None
-        ):
-            raise ValueError(
-                "A scaled StableSoft visual requires a scaled StableSoft arm"
-            )
-        if (
-            scaled_stablesoft_tendon_drive is not None
-            and scaled_stablesoft_arm is None
-        ):
-            raise ValueError(
-                "A scaled StableSoft tendon drive requires a scaled "
-                "StableSoft arm"
-            )
-        if (
-            scaled_stablesoft_tendon_drive is not None
-            and not isinstance(
-                scaled_stablesoft_tendon_drive,
-                IdealTendonTensionSpec,
-            )
-        ):
-            raise TypeError(
-                "scaled_stablesoft_tendon_drive must be an "
-                "IdealTendonTensionSpec"
-            )
-
-        if enable_3g_payload:
-            if drone_model != DroneModel.CF2X:
-                raise ValueError("The 3 g rigid payload is only supported for DroneModel.CF2X")
-            if num_drones != 1:
-                raise ValueError("The 3 g rigid payload benchmark requires num_drones == 1")
+        if enable_3g_payload or passive_arm is not None or scaled_stablesoft_arm is not None:
             if physics != Physics.MJC:
-                raise ValueError("The 3 g rigid payload is only supported with Physics.MJC")
+                raise ValueError("Attached payloads and arms are only supported with Physics.MJC")
             if act_type != ActionType.RPM:
-                raise ValueError("The 3 g rigid payload is only supported with ActionType.RPM")
-
-        if passive_arm is not None:
-            if enable_3g_payload:
-                raise ValueError("The passive arm cannot be combined with the 3 g rigid payload")
-            if drone_model != DroneModel.CF2X:
-                raise ValueError("The passive arm is only supported for DroneModel.CF2X")
-            if num_drones != 1:
-                raise ValueError("The passive arm requires num_drones == 1")
-            if physics != Physics.MJC:
-                raise ValueError("The passive arm is only supported with Physics.MJC")
-            if act_type != ActionType.RPM:
-                raise ValueError("The passive arm is only supported with ActionType.RPM")
-
-        if scaled_stablesoft_arm is not None:
-            if enable_3g_payload:
-                raise ValueError(
-                    "The scaled StableSoft arm cannot be combined with the 3 g rigid payload"
-                )
-            if drone_model != DroneModel.CF2X:
-                raise ValueError(
-                    "The scaled StableSoft arm is only supported for DroneModel.CF2X"
-                )
-            if num_drones != 1:
-                raise ValueError(
-                    "The scaled StableSoft arm requires num_drones == 1"
-                )
-            if physics != Physics.MJC:
-                raise ValueError(
-                    "The scaled StableSoft arm is only supported with Physics.MJC"
-                )
-            if act_type != ActionType.RPM:
-                raise ValueError(
-                    "The scaled StableSoft arm is only supported with ActionType.RPM"
-                )
+                raise ValueError("Attached payloads and arms are only supported with ActionType.RPM")
 
         # Constants
         self.G = 9.81
@@ -309,12 +240,12 @@ class BaseAviary(gym.Env):
                 )
             ]).T.reshape(num_drones, 3)
         else:
-            self.INIT_XYZS = np.array(initial_xyzs).reshape(num_drones, 3)
+            self.INIT_XYZS = np.array(initial_xyzs)
 
         if initial_rpys is None:
             self.INIT_RPYS = np.zeros((num_drones, 3))
         else:
-            self.INIT_RPYS = np.array(initial_rpys).reshape(num_drones, 3)
+            self.INIT_RPYS = np.array(initial_rpys)
 
         # Generate and load MuJoCo model
         mjcf_build = build_aviary_mjcf(
@@ -334,6 +265,8 @@ class BaseAviary(gym.Env):
                 scaled_stablesoft_tendon_drive
             ),
         )
+        self.INIT_XYZS = self.INIT_XYZS.reshape(num_drones, 3)
+        self.INIT_RPYS = self.INIT_RPYS.reshape(num_drones, 3)
         self._generated_xml = mjcf_build.xml
         self.SCALED_STABLESOFT_ARM_MANIFEST = (
             mjcf_build.scaled_stablesoft_arm_manifest

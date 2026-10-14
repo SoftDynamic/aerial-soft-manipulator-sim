@@ -13,10 +13,8 @@ from multi_drone_mujoco.backends.contracts import (
     RotorSpeedCommand,
     SimulatorClock,
 )
-from multi_drone_mujoco.backends.watchdog import CommandWatchdog
 
 __all__ = [
-    "CommandWatchdog",
     "ControllerBackend",
     "ControllerHealth",
     "ControllerStepResult",

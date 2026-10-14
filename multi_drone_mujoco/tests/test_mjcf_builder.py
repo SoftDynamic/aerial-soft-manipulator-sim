@@ -5,7 +5,7 @@ import numpy as np
 import pytest
 
 from multi_drone_mujoco.envs.base_aviary import BaseAviary
-from multi_drone_mujoco.models.mjcf_builder import build_aviary_xml
+from multi_drone_mujoco.models.mjcf_builder import build_aviary_mjcf
 from multi_drone_mujoco.models.parameters import DRONE_PARAMS
 from multi_drone_mujoco.utils.enums import DroneModel
 
@@ -13,13 +13,13 @@ from multi_drone_mujoco.utils.enums import DroneModel
 @pytest.mark.parametrize("drone_model", list(DroneModel))
 def test_builder_compiles_supported_drone_models(drone_model):
     timestep = 1 / 480
-    model = mujoco.MjModel.from_xml_string(build_aviary_xml(
+    model = mujoco.MjModel.from_xml_string(build_aviary_mjcf(
         num_drones=1,
         drone_model=drone_model,
         init_xyzs=np.array([[0.0, 0.0, 1.0]]),
         init_rpys=np.zeros((1, 3)),
         timestep=timestep,
-    ))
+    ).xml)
 
     drone_id = mujoco.mj_name2id(
         model, mujoco.mjtObj.mjOBJ_BODY, "drone0"
@@ -36,14 +36,14 @@ def test_builder_compiles_supported_drone_models(drone_model):
 def test_builder_preserves_multi_drone_scene_features_and_initial_poses():
     init_xyzs = np.array([[0.1, 0.2, 0.3], [-0.4, 0.5, 0.6]])
     init_rpys = np.array([[0.0, 0.0, 0.0], [0.0, 0.0, np.pi / 2]])
-    model = mujoco.MjModel.from_xml_string(build_aviary_xml(
+    model = mujoco.MjModel.from_xml_string(build_aviary_mjcf(
         num_drones=2,
         drone_model=DroneModel.CF2X,
         init_xyzs=init_xyzs,
         init_rpys=init_rpys,
         obstacles=True,
         vision=True,
-    ))
+    ).xml)
 
     expected_quats = np.array([
         [1.0, 0.0, 0.0, 0.0],
@@ -72,13 +72,13 @@ def test_builder_preserves_multi_drone_scene_features_and_initial_poses():
 
 
 def test_builder_compiles_3g_payload_with_expected_parent():
-    model = mujoco.MjModel.from_xml_string(build_aviary_xml(
+    model = mujoco.MjModel.from_xml_string(build_aviary_mjcf(
         num_drones=1,
         drone_model=DroneModel.CF2X,
         init_xyzs=np.array([[0.0, 0.0, 1.0]]),
         init_rpys=np.zeros((1, 3)),
         enable_3g_payload=True,
-    ))
+    ).xml)
 
     drone_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "drone0")
     payload_id = mujoco.mj_name2id(

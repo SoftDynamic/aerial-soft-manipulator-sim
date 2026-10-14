@@ -1,5 +1,6 @@
 from pathlib import Path
 import json
+from types import SimpleNamespace
 
 import mujoco
 import numpy as np
@@ -37,6 +38,10 @@ class FakeAviary:
         self.rpy = np.zeros((1, 3))
         self.actions = []
         self.closed = False
+        self.SCALED_STABLESOFT_ARM_MANIFEST = None
+        self.HOVER_RPM = 15000.0
+        self._generated_xml = '<mujoco model="fake"/>'
+        self.data = SimpleNamespace(ncon=0, ctrl=np.zeros(0))
 
     def reset(self, seed=None):
         self.pos[:] = (0.0, 0.0, 1.0)
@@ -117,14 +122,6 @@ def test_owned_launch_requires_local_checkout_and_exact_instance_port(tmp_path):
             simulator_host="127.0.0.1",
         )
 
-    with pytest.raises(ValueError, match="explicitly owned"):
-        Px4RunnerConfig(
-            mode=Px4EnvironmentMode.REMOTE,
-            bind_host="127.0.0.1",
-            bind_port=4560,
-            duration_s=2.0,
-            disconnect_time_s=1.0,
-        )
     with pytest.raises(ValueError, match="connects to port 4561"):
         Px4RunnerConfig(
             mode=Px4EnvironmentMode.LOCAL,
@@ -177,89 +174,17 @@ def test_active_arm_uses_exact_200_240_hz_common_scheduler(tmp_path):
         bind_host="127.0.0.1",
         bind_port=4560,
         plant="active_arm",
-        tendon_profile="x_pos",
         duration_s=6.0,
         log_dir=tmp_path,
     )
     assert config.plant_step_freq_hz == 1200
     assert config.plant_step_freq_hz // config.control_freq_hz == 6
     assert config.plant_step_freq_hz // 240 == 5
-    with pytest.raises(ValueError, match="300e-6"):
+    with pytest.raises(ValueError, match="divisible by 240 Hz"):
         Px4RunnerConfig(
-            mode=Px4EnvironmentMode.REMOTE,
-            bind_host="127.0.0.1",
-            bind_port=4560,
-            plant="active_arm",
-            tendon_profile="x_pos",
-            duration_s=6.0,
-            tendon_reference_l1_m=301e-6,
-            log_dir=tmp_path,
+            mode="remote", bind_host="127.0.0.1", bind_port=4560,
+            plant="active_arm", plant_step_freq_hz=200, log_dir=tmp_path,
         )
-
-
-def test_reverse_profile_is_discrete_time_exact_and_reverses_direction(tmp_path):
-    config = Px4RunnerConfig(
-        mode=Px4EnvironmentMode.REMOTE,
-        bind_host="127.0.0.1",
-        bind_port=4560,
-        plant="active_arm",
-        tendon_profile="reverse",
-        duration_s=7.0,
-        tendon_start_time_s=5.0,
-        tendon_reference_l1_m=100e-6,
-        log_dir=tmp_path,
-    )
-    runner = Px4MujocoRunner(
-        config, FakeAviary(), make_backend(FakeTransport()), MujocoTruthSource()
-    )
-    timestep = 1.0 / 240
-    position = 0.0
-    velocity = 0.0
-    positions = []
-    velocities = []
-    for tick in range(2 * 240):
-        acceleration = runner._tendon_acceleration_command(
-            config.tendon_start_time_s + tick * timestep
-        )[0]
-        velocity += acceleration * timestep
-        position += velocity * timestep
-        positions.append(position)
-        velocities.append(velocity)
-    assert positions[23] == pytest.approx(100e-6, abs=1e-12)
-    assert min(positions) == pytest.approx(-100e-6, abs=1e-12)
-    assert positions[-1] == pytest.approx(-100e-6, abs=1e-12)
-    assert velocity == pytest.approx(0.0, abs=1e-12)
-    assert max(abs(value) for value in velocities) <= 0.002 + 1e-12
-
-
-def test_max_reference_profile_respects_frozen_velocity_limit(tmp_path):
-    config = Px4RunnerConfig(
-        mode=Px4EnvironmentMode.REMOTE,
-        bind_host="127.0.0.1",
-        bind_port=4560,
-        plant="active_arm",
-        tendon_profile="x_pos",
-        duration_s=7.0,
-        tendon_start_time_s=5.0,
-        tendon_reference_l1_m=300e-6,
-        log_dir=tmp_path,
-    )
-    runner = Px4MujocoRunner(
-        config, FakeAviary(), make_backend(FakeTransport()), MujocoTruthSource()
-    )
-    timestep = 1.0 / 240
-    position = velocity = 0.0
-    velocities = []
-    for tick in range(240):
-        acceleration = runner._tendon_acceleration_command(
-            config.tendon_start_time_s + tick * timestep
-        )[0]
-        velocity += acceleration * timestep
-        position += velocity * timestep
-        velocities.append(velocity)
-    assert position == pytest.approx(300e-6, abs=1e-12)
-    assert velocity == pytest.approx(0.0, abs=1e-12)
-    assert max(abs(value) for value in velocities) <= 0.002 + 1e-12
 
 
 def test_fake_runner_bootstraps_then_advances_physics_and_closes(tmp_path):
@@ -289,7 +214,7 @@ def test_fake_runner_bootstraps_then_advances_physics_and_closes(tmp_path):
     assert aviary.closed
     assert Path(metrics.log_path).is_file()
     payload = json.loads(Path(metrics.log_path).read_text())
-    assert payload["schema_version"] == 3
+    assert payload["schema_version"] == 4
     assert payload["started_utc"] < payload["ended_utc"]
     assert payload["metrics"]["log_path"] == metrics.log_path
     assert transport.health.state.value == "closed"
@@ -380,7 +305,7 @@ def test_headless_replay_applies_tip_force_once_per_step_and_clears_it(tmp_path)
     assert replay.events[0].force_n == pytest.approx((0.002, 0.0, 0.0))
 
 
-def test_headless_tendon_replay_enters_frozen_modal_controller(tmp_path):
+def test_headless_tendon_replay_enters_frozen_modal_controller(tmp_path, monkeypatch):
     event_path = tmp_path / "tendon.json"
     event_path.write_text(json.dumps({"events": [{
         "start_s": 0.004,
@@ -394,19 +319,33 @@ def test_headless_tendon_replay_enters_frozen_modal_controller(tmp_path):
         bind_port=4560,
         plant="active_arm",
         duration_s=0.025,
-        tendon_start_time_s=0.0,
         bootstrap_wall_interval_s=0.0,
         interaction_mode="replay",
         interaction_script=event_path,
         log_dir=tmp_path,
     )
     created = Px4MujocoRunner.create_default(config)
+    import multi_drone_mujoco.control.ideal_tendon_tension as tension_module
+
+    def unexpected_resolution(*args):
+        pytest.fail("the runner must reuse the environment's actuator bindings")
+
+    monkeypatch.setattr(tension_module, "resolve_ideal_tendon_actuator_bindings", unexpected_resolution)
+    original_parse = DeterministicInteractionTimeline.from_json
+    parsed_paths = []
+
+    def counted_parse(path):
+        parsed_paths.append(path)
+        return original_parse(path)
+
+    monkeypatch.setattr(DeterministicInteractionTimeline, "from_json", staticmethod(counted_parse))
     created.backend.transport = FakeTransport(_fake_packets(6))
     created.backend.coordinator.transport = created.backend.transport
     metrics = created.run()
     assert metrics.outcome == "completed"
     assert metrics.interaction_command_count > 0
     assert metrics.interaction_release_count == 1
+    assert parsed_paths == [event_path]
     assert metrics.max_tendon_tension_n < 0.010
     assert np.linalg.norm(metrics.final_tendon_reference_m) > 0.0
     assert np.linalg.norm(metrics.final_tendon_reference_m, ord=1) <= 300e-6

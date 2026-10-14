@@ -20,7 +20,6 @@ from multi_drone_mujoco.models.components.tendon_drive import (
 )
 from multi_drone_mujoco.models.mjcf_builder import (
     build_aviary_mjcf,
-    build_aviary_xml,
 )
 from multi_drone_mujoco.utils.enums import ActionType, DroneModel, Physics
 
@@ -97,11 +96,10 @@ def test_passive_builder_interface_and_xml_are_unchanged():
     kwargs = _builder_kwargs()
     build = build_aviary_mjcf(**kwargs)
 
-    assert build_aviary_xml(**kwargs) == build.xml
-    assert build_aviary_xml(
+    assert build_aviary_mjcf(
         **kwargs,
         scaled_stablesoft_tendon_drive=None,
-    ) == build.xml
+    ).xml == build.xml
     assert build.scaled_stablesoft_arm_manifest is not None
     assert not build.scaled_stablesoft_arm_manifest.tendon_actuator_names
 

@@ -97,18 +97,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--plant", choices=("rigid", "passive_arm", "active_arm"), default="rigid"
     )
-    parser.add_argument("--disturbance-time", type=float)
-    parser.add_argument(
-        "--disturbance-velocity", type=_vector3, default=(0.0, 0.0, 0.0)
-    )
-    parser.add_argument(
-        "--tendon-profile",
-        choices=("disabled", "x_pos", "x_neg", "diagonal", "reverse"),
-        default="disabled",
-    )
-    parser.add_argument("--tendon-start-time", type=float, default=5.0)
-    parser.add_argument("--tendon-reference", type=float, default=100e-6)
-    parser.add_argument("--disconnect-time", type=float)
     return parser
 
 
@@ -151,12 +139,6 @@ def main() -> int:
         spool_target_height_offset_m=args.spool_target_height_offset,
         release_transition_s=args.release_transition,
         plant=args.plant,
-        disturbance_time_s=args.disturbance_time,
-        disturbance_velocity_enu_m_s=args.disturbance_velocity,
-        tendon_profile=args.tendon_profile,
-        tendon_start_time_s=args.tendon_start_time,
-        tendon_reference_l1_m=args.tendon_reference,
-        disconnect_time_s=args.disconnect_time,
         interaction_mode=args.interaction_mode,
         interaction_script=args.interaction_script,
         interaction_target_body=args.interaction_target_body,
@@ -176,11 +158,7 @@ def main() -> int:
         allow_unverified_joint_torque=args.allow_unverified_joint_torque,
     )
     runner = Px4MujocoRunner.create_default(config)
-    try:
-        metrics = runner.run()
-    except Exception as exc:
-        print(f"PX4 run failed: {type(exc).__name__}: {exc}")
-        return 1
+    metrics = runner.run()
     print(json.dumps(metrics.__dict__, indent=2, sort_keys=True))
     return 0 if metrics.outcome == "completed" else 2
 
