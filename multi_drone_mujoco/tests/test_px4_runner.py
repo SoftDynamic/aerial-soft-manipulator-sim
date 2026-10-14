@@ -627,3 +627,79 @@ def test_nan_measurement_cannot_start_recovery_window(tmp_path):
         assert runner._update_recovery(3.0, float("nan"), 0, None, metrics) is None
         assert metrics.interaction_recovery_time_s is None
     finally: runner.close()
+
+
+def test_actual_sent_setpoint_phase_and_nonzero_world_offset(tmp_path):
+    from dataclasses import replace
+    from multi_drone_mujoco.backends.contracts import SimulatorClock
+    runner = _diagnostic_runner(tmp_path, "baseline")
+    runner.config = replace(runner.config, initial_position_enu_m=(2, 3, 4), target_position_enu_m=(5, 6, 7))
+    sent = []
+    runner.flight_control = SimpleNamespace(send_position_setpoint_enu=lambda t, p: sent.append((t, p)))
+    try:
+        for index, t in enumerate((0.0, 0.25, 0.5, 0.75, 1.0)):
+            clock = SimulatorClock(2000000 + index*250000, index+1)
+            local = runner._flight_target_local_enu(t)
+            phase = "height_setpoint_transition" if t < 1 else "fixed_target_hover"
+            runner._send_position_setpoint(clock, local, phase, t)
+            actual = runner._last_position_setpoint
+            assert sent[-1] == (clock.timestamp_us, local)
+            assert actual["setpoint_local_enu_m"] == local
+            assert actual["setpoint_world_enu_m"] == pytest.approx((5, 6, 8-t))
+            assert actual["setpoint_sent_time_since_release_s"] == t
+            assert actual["setpoint_transition_complete"] == (t >= 1)
+        assert runner._flight_phase_timing["fixed_target_hover"]["timestamp_us"] == 3000000
+        # This deliberately non-profile command proves the recorder observes the
+        # transmitted argument instead of reconstructing a nominal trajectory.
+        runner._send_position_setpoint(SimulatorClock(3005000, 6), (0.42, 0.43, 0.44), "fixed_target_hover", 1.005)
+        assert runner._last_position_setpoint["setpoint_world_enu_m"] == pytest.approx((2.42, 3.43, 4.44))
+        runner.flight_control = None
+    finally: runner.close()
+
+
+@pytest.mark.parametrize("outlier", [False, True])
+def test_eight_second_baseline_final_window_high_rate_peaks_and_bounded_samples(tmp_path, outlier):
+    from dataclasses import replace
+    from multi_drone_mujoco.backends.px4_runner import Px4RunMetrics
+    from multi_drone_mujoco.backends.contracts import SimulatorClock
+    runner = _diagnostic_runner(tmp_path, "baseline")
+    runner.config = replace(runner.config, duration_s=8, diagnostics={**runner.config.diagnostics, "baseline_s": 8})
+    metrics = Px4RunMetrics()
+    env = runner.aviary
+    tip = runner._arm_tip_relative()
+    runner.flight_control = SimpleNamespace(send_position_setpoint_enu=lambda *a: None)
+    runner._send_position_setpoint(SimulatorClock(2005000, 201), (0, 0, 0), "fixed_target_hover", 1)
+    runner.flight_control = None
+    try:
+        for i in range(1, 9601):
+            t = i/1200
+            runner._diagnostic_tension((i-1)/1200, metrics)
+            env.pos[0, 2] = 1.05
+            env.vel[0, 2] = 0.01
+            # Startup outliers must not fail the final 7..8 s criterion.
+            error, speed = (0.2, 0.3) if i == 601 else (0.05, 0.01)
+            if i == 601: env.pos[0, 2] = 1.2
+            if i == 8401 and outlier: error = 0.11
+            metrics.physics_steps = i
+            runner._measure_diagnostic(t, error, speed, tip, tip, metrics)
+        assert metrics.baseline_status == ("未在规定窗口内满足悬停判据" if outlier else "passed")
+        stats = metrics.hover_baseline
+        assert stats["height_max"] == 1.2 and stats["height_max_time_since_release_s"] == pytest.approx(601/1200)
+        assert metrics.baseline_max_speed_m_s == 0.3
+        assert stats["final_window"]["count"] == 1200
+        assert stats["final_window"]["max_position_error_m"] == (0.11 if outlier else 0.05)
+        assert len(runner._diagnostic_samples) == 160 and runner._diagnostic_samples.maxlen == 256
+        assert max(x["position_error_m"] for x in runner._diagnostic_samples) == 0.05
+        sample = runner._diagnostic_samples[-1]
+        assert sample["time_since_release_s"] == 8
+        assert sample["final_target_world_enu_m"] == (0, 0, 1)
+        assert sample["setpoint_world_enu_m"] == (0, 0, 1)
+        assert sample["flight_phase"] == "fixed_target_hover" and sample["setpoint_transition_complete"]
+        assert metrics.pulse_start_s is None and metrics.pulse_release_s is None
+        assert not any(sample["tendon_commands_n"])
+        # The same bounded recorder stays capped if fed a longer synthetic run.
+        for i in range(9601, 18001):
+            metrics.physics_steps = i
+            runner._measure_diagnostic(i/1200, 0.05, 0.01, tip, tip, metrics)
+        assert len(runner._diagnostic_samples) == 256
+    finally: runner.close()

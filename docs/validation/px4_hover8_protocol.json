@@ -1,0 +1,513 @@
+{
+  "frozen_utc": "2026-10-14T12:22:56.347166+00:00",
+  "objective": "distinguish unchanged plant-release/height-setpoint transient from height oscillation after fixed target",
+  "project_start_commit": "0f751e2665023031ac880bbfbaddd849e4f39b4b",
+  "implementation_diff_sha256": "4def498458c1c884a4bbcb53f40275aca6c02d69729c8b5f9de9d070148e883d",
+  "px4_checkout_commit": "d6f12ad1c4f70ad3230afd7d86e971421e02fef4",
+  "daily_config_sha256": "404544abba2ea62721df1946059c1d68c57c5bfc6263f5623b59bd47a16733d4",
+  "temporary_config_sha256": "2278cb55be7de872908328eb0df0f44b04d5ef36eab8a7eabf6b4345ce7febc1",
+  "model_xml_sha256": "d71a943c1af3980e631843c899bc4960966991f2cc4c07b6da402857b12126df",
+  "px4_parameter_file_sha256": "6529a94536ce33f60a6ce3c91a634d59534b1b737c7ff92ebd2992b390acf045",
+  "effective_config": {
+    "values": {
+      "robot": {
+        "uav": {
+          "mass_kg": 0.027,
+          "ixx_kg_m2": 1.4e-05,
+          "iyy_kg_m2": 1.4e-05,
+          "izz_kg_m2": 2.17e-05,
+          "arm_length_m": 0.0397,
+          "kf_n_per_rpm2": 3.16e-10,
+          "km_nm_per_rpm2": 7.94e-12,
+          "thrust2weight_ratio": 2.25,
+          "prop_radius_m": 0.02325,
+          "collision_height_m": 0.03,
+          "collision_radius_m": 0.06,
+          "collision_z_offset_m": 0.0
+        },
+        "soft_arm": {
+          "segment_count": 9,
+          "total_length_m": 0.08,
+          "total_mass_kg": 0.003,
+          "body_radius_m": 0.003,
+          "joint_stiffness_nm_per_rad": 0.003086,
+          "joint_damping_nm_s_per_rad": null,
+          "target_damping_ratio": 0.3,
+          "tendon_frictionloss_n": 0.0,
+          "max_tension_n": 0.01,
+          "visual_mode": "mesh"
+        }
+      },
+      "simulation": {
+        "uav_source": "px4",
+        "arm_source": "manual",
+        "initial_position_enu_m": [
+          0,
+          0,
+          1
+        ],
+        "target_position_enu_m": [
+          0,
+          0,
+          1
+        ],
+        "arm_acceleration_m_s2": [
+          0,
+          0
+        ],
+        "gui": false,
+        "duration_s": 8.0,
+        "headless_duration_s": 5.0,
+        "sim_freq_hz": 2400,
+        "control_freq_hz": 200,
+        "plant_step_freq_hz": 1200,
+        "export_xml": null,
+        "log_dir": "/tmp/px4-hover8/trial1"
+      },
+      "px4": {
+        "mode": "local",
+        "bind_host": "127.0.0.1",
+        "bind_port": 4560,
+        "launch_owned_px4": true,
+        "auto_flight": true,
+        "autopilot_dir": "/home/ustc/PX4-Autopilot",
+        "simulator_host": "127.0.0.1",
+        "parameter_file": "/home/ustc/mujoco_UAV-refactor/configs/px4/cf2x_scaled_stablesoft_passive.params",
+        "gcs_bind_host": "127.0.0.1",
+        "gcs_bind_port": 14550,
+        "motor_time_constant_s": 0.0
+      },
+      "diagnostics": {
+        "trial": "baseline",
+        "sample_hz": 20,
+        "max_samples": 256,
+        "baseline_s": 8.0,
+        "stable_window_s": 1.0,
+        "position_threshold_m": 0.1,
+        "speed_threshold_m_s": 0.1,
+        "pulse_tendon_index": 0,
+        "pulse_tension_n": 0.001,
+        "pulse_duration_s": 0.3,
+        "recovery_s": 5.0
+      }
+    },
+    "origins": {
+      "robot.uav.mass_kg": "yaml",
+      "robot.uav.ixx_kg_m2": "yaml",
+      "robot.uav.iyy_kg_m2": "yaml",
+      "robot.uav.izz_kg_m2": "yaml",
+      "robot.uav.arm_length_m": "yaml",
+      "robot.uav.kf_n_per_rpm2": "yaml",
+      "robot.uav.km_nm_per_rpm2": "yaml",
+      "robot.uav.thrust2weight_ratio": "yaml",
+      "robot.uav.prop_radius_m": "yaml",
+      "robot.uav.collision_height_m": "yaml",
+      "robot.uav.collision_radius_m": "yaml",
+      "robot.uav.collision_z_offset_m": "yaml",
+      "robot.soft_arm.segment_count": "yaml",
+      "robot.soft_arm.total_length_m": "yaml",
+      "robot.soft_arm.total_mass_kg": "yaml",
+      "robot.soft_arm.body_radius_m": "yaml",
+      "robot.soft_arm.joint_stiffness_nm_per_rad": "yaml",
+      "robot.soft_arm.joint_damping_nm_s_per_rad": "yaml",
+      "robot.soft_arm.target_damping_ratio": "yaml",
+      "robot.soft_arm.tendon_frictionloss_n": "yaml",
+      "robot.soft_arm.max_tension_n": "yaml",
+      "robot.soft_arm.visual_mode": "yaml",
+      "simulation.uav_source": "yaml",
+      "simulation.arm_source": "yaml",
+      "simulation.initial_position_enu_m": "yaml",
+      "simulation.target_position_enu_m": "yaml",
+      "simulation.arm_acceleration_m_s2": "yaml",
+      "simulation.gui": "yaml",
+      "simulation.duration_s": "yaml",
+      "simulation.headless_duration_s": "yaml",
+      "simulation.sim_freq_hz": "yaml",
+      "simulation.control_freq_hz": "yaml",
+      "simulation.plant_step_freq_hz": "yaml",
+      "simulation.export_xml": "yaml",
+      "simulation.log_dir": "yaml",
+      "px4.mode": "yaml",
+      "px4.bind_host": "yaml",
+      "px4.bind_port": "yaml",
+      "px4.launch_owned_px4": "yaml",
+      "px4.auto_flight": "yaml",
+      "px4.autopilot_dir": "yaml",
+      "px4.simulator_host": "yaml",
+      "px4.parameter_file": "yaml",
+      "px4.gcs_bind_host": "yaml",
+      "px4.gcs_bind_port": "yaml",
+      "diagnostics.trial": "yaml",
+      "diagnostics.sample_hz": "yaml",
+      "diagnostics.max_samples": "yaml",
+      "diagnostics.baseline_s": "yaml",
+      "diagnostics.stable_window_s": "yaml",
+      "diagnostics.position_threshold_m": "yaml",
+      "diagnostics.speed_threshold_m_s": "yaml",
+      "diagnostics.pulse_tendon_index": "yaml",
+      "diagnostics.pulse_tension_n": "yaml",
+      "diagnostics.pulse_duration_s": "yaml",
+      "diagnostics.recovery_s": "yaml",
+      "px4.motor_time_constant_s": "yaml"
+    },
+    "source_file": "/tmp/px4-hover8.yaml"
+  },
+  "resolved_px4_runner_config": {
+    "mode": "local",
+    "bind_host": "127.0.0.1",
+    "bind_port": 4560,
+    "launch_owned_px4": true,
+    "autopilot_dir": "/home/ustc/PX4-Autopilot",
+    "simulator_host": "127.0.0.1",
+    "parameter_file": "/home/ustc/mujoco_UAV-refactor/configs/px4/cf2x_scaled_stablesoft_passive.params",
+    "px4_instance": 0,
+    "initial_position_enu_m": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "target_position_enu_m": [
+      0.0,
+      0.0,
+      1.0
+    ],
+    "sim_freq_hz": 2400,
+    "control_freq_hz": 200,
+    "duration_s": 8.0,
+    "handshake_timeout_s": 10.0,
+    "actuator_timeout_s": 1.0,
+    "bootstrap_max_frames": 1000,
+    "bootstrap_wall_interval_s": 0.001,
+    "bootstrap_final_timeout_s": 1.0,
+    "gui": false,
+    "log_dir": "/tmp/px4-hover8/trial1",
+    "random_seed": 0,
+    "motor_time_constant_s": 0.0,
+    "gcs_bind_host": "127.0.0.1",
+    "gcs_bind_port": 14550,
+    "auto_flight": true,
+    "preflight_duration_s": 10.0,
+    "offboard_warmup_s": 1.0,
+    "armed_ramp_timeout_s": 8.0,
+    "release_hover_rpm_fraction": 1.1,
+    "landing_duration_s": 8.0,
+    "landing_descent_s": 3.0,
+    "landing_height_enu_m": 0.06,
+    "spool_target_height_offset_m": 1.0,
+    "release_transition_s": 1.0,
+    "plant": "active_arm",
+    "arm_source": "manual",
+    "arm_acceleration_m_s2": [
+      0.0,
+      0.0
+    ],
+    "visual_mode": "mesh",
+    "plant_step_freq_hz": 1200,
+    "interaction_mode": "disabled",
+    "interaction_script": null,
+    "interaction_target_body": null,
+    "interaction_target_site": null,
+    "interaction_target_policy": "arm_segments",
+    "interaction_force_step_n": 0.0005,
+    "interaction_max_force_n": 0.001,
+    "interaction_spring_n_per_m": 0.25,
+    "interaction_damping_n_s_per_m": 0.01,
+    "interaction_force_release": "immediate",
+    "tendon_acceleration_step_m_s2": 0.005,
+    "tendon_acceleration_limit_m_s2": 0.04,
+    "interaction_overlay": true,
+    "allow_unverified_force": false,
+    "joint_torque_step_nm": 1e-05,
+    "joint_torque_limit_nm": 5e-05,
+    "allow_unverified_joint_torque": false,
+    "uav_parameters": {
+      "values": [
+        [
+          "mass",
+          0.027
+        ],
+        [
+          "arm_length",
+          0.0397
+        ],
+        [
+          "thrust2weight_ratio",
+          2.25
+        ],
+        [
+          "ixx",
+          1.4e-05
+        ],
+        [
+          "iyy",
+          1.4e-05
+        ],
+        [
+          "izz",
+          2.17e-05
+        ],
+        [
+          "kf",
+          3.16e-10
+        ],
+        [
+          "km",
+          7.94e-12
+        ],
+        [
+          "prop_radius",
+          0.02325
+        ],
+        [
+          "max_speed_kmh",
+          30.0
+        ],
+        [
+          "gnd_eff_coeff",
+          11.36859
+        ],
+        [
+          "drag_coeff_xy",
+          9.1785e-07
+        ],
+        [
+          "drag_coeff_z",
+          1.0311e-06
+        ],
+        [
+          "dw_coeff_1",
+          2267.18
+        ],
+        [
+          "dw_coeff_2",
+          0.16
+        ],
+        [
+          "dw_coeff_3",
+          -0.11
+        ],
+        [
+          "collision_h",
+          0.03
+        ],
+        [
+          "collision_r",
+          0.06
+        ],
+        [
+          "collision_z_offset",
+          0.0
+        ]
+      ]
+    },
+    "arm_spec": {
+      "num_segments": 9,
+      "total_length": 0.08,
+      "total_mass": 0.003,
+      "body_radius": 0.003,
+      "tendon_range": null,
+      "tendon_frictionloss": 0.0,
+      "joint_stiffness": 0.003086,
+      "joint_damping": null,
+      "target_damping_ratio": 0.3
+    },
+    "max_tension_n": 0.01,
+    "diagnostics": {
+      "trial": "baseline",
+      "sample_hz": 20,
+      "max_samples": 256,
+      "baseline_s": 8.0,
+      "stable_window_s": 1.0,
+      "position_threshold_m": 0.1,
+      "speed_threshold_m_s": 0.1,
+      "pulse_tendon_index": 0,
+      "pulse_tension_n": 0.001,
+      "pulse_duration_s": 0.3,
+      "recovery_s": 5.0
+    },
+    "effective_config": {
+      "values": {
+        "robot": {
+          "uav": {
+            "mass_kg": 0.027,
+            "ixx_kg_m2": 1.4e-05,
+            "iyy_kg_m2": 1.4e-05,
+            "izz_kg_m2": 2.17e-05,
+            "arm_length_m": 0.0397,
+            "kf_n_per_rpm2": 3.16e-10,
+            "km_nm_per_rpm2": 7.94e-12,
+            "thrust2weight_ratio": 2.25,
+            "prop_radius_m": 0.02325,
+            "collision_height_m": 0.03,
+            "collision_radius_m": 0.06,
+            "collision_z_offset_m": 0.0
+          },
+          "soft_arm": {
+            "segment_count": 9,
+            "total_length_m": 0.08,
+            "total_mass_kg": 0.003,
+            "body_radius_m": 0.003,
+            "joint_stiffness_nm_per_rad": 0.003086,
+            "joint_damping_nm_s_per_rad": null,
+            "target_damping_ratio": 0.3,
+            "tendon_frictionloss_n": 0.0,
+            "max_tension_n": 0.01,
+            "visual_mode": "mesh"
+          }
+        },
+        "simulation": {
+          "uav_source": "px4",
+          "arm_source": "manual",
+          "initial_position_enu_m": [
+            0,
+            0,
+            1
+          ],
+          "target_position_enu_m": [
+            0,
+            0,
+            1
+          ],
+          "arm_acceleration_m_s2": [
+            0,
+            0
+          ],
+          "gui": false,
+          "duration_s": 8.0,
+          "headless_duration_s": 5.0,
+          "sim_freq_hz": 2400,
+          "control_freq_hz": 200,
+          "plant_step_freq_hz": 1200,
+          "export_xml": null,
+          "log_dir": "/tmp/px4-hover8/trial1"
+        },
+        "px4": {
+          "mode": "local",
+          "bind_host": "127.0.0.1",
+          "bind_port": 4560,
+          "launch_owned_px4": true,
+          "auto_flight": true,
+          "autopilot_dir": "/home/ustc/PX4-Autopilot",
+          "simulator_host": "127.0.0.1",
+          "parameter_file": "/home/ustc/mujoco_UAV-refactor/configs/px4/cf2x_scaled_stablesoft_passive.params",
+          "gcs_bind_host": "127.0.0.1",
+          "gcs_bind_port": 14550,
+          "motor_time_constant_s": 0.0
+        },
+        "diagnostics": {
+          "trial": "baseline",
+          "sample_hz": 20,
+          "max_samples": 256,
+          "baseline_s": 8.0,
+          "stable_window_s": 1.0,
+          "position_threshold_m": 0.1,
+          "speed_threshold_m_s": 0.1,
+          "pulse_tendon_index": 0,
+          "pulse_tension_n": 0.001,
+          "pulse_duration_s": 0.3,
+          "recovery_s": 5.0
+        }
+      },
+      "origins": {
+        "robot.uav.mass_kg": "yaml",
+        "robot.uav.ixx_kg_m2": "yaml",
+        "robot.uav.iyy_kg_m2": "yaml",
+        "robot.uav.izz_kg_m2": "yaml",
+        "robot.uav.arm_length_m": "yaml",
+        "robot.uav.kf_n_per_rpm2": "yaml",
+        "robot.uav.km_nm_per_rpm2": "yaml",
+        "robot.uav.thrust2weight_ratio": "yaml",
+        "robot.uav.prop_radius_m": "yaml",
+        "robot.uav.collision_height_m": "yaml",
+        "robot.uav.collision_radius_m": "yaml",
+        "robot.uav.collision_z_offset_m": "yaml",
+        "robot.soft_arm.segment_count": "yaml",
+        "robot.soft_arm.total_length_m": "yaml",
+        "robot.soft_arm.total_mass_kg": "yaml",
+        "robot.soft_arm.body_radius_m": "yaml",
+        "robot.soft_arm.joint_stiffness_nm_per_rad": "yaml",
+        "robot.soft_arm.joint_damping_nm_s_per_rad": "yaml",
+        "robot.soft_arm.target_damping_ratio": "yaml",
+        "robot.soft_arm.tendon_frictionloss_n": "yaml",
+        "robot.soft_arm.max_tension_n": "yaml",
+        "robot.soft_arm.visual_mode": "yaml",
+        "simulation.uav_source": "yaml",
+        "simulation.arm_source": "yaml",
+        "simulation.initial_position_enu_m": "yaml",
+        "simulation.target_position_enu_m": "yaml",
+        "simulation.arm_acceleration_m_s2": "yaml",
+        "simulation.gui": "yaml",
+        "simulation.duration_s": "yaml",
+        "simulation.headless_duration_s": "yaml",
+        "simulation.sim_freq_hz": "yaml",
+        "simulation.control_freq_hz": "yaml",
+        "simulation.plant_step_freq_hz": "yaml",
+        "simulation.export_xml": "yaml",
+        "simulation.log_dir": "yaml",
+        "px4.mode": "yaml",
+        "px4.bind_host": "yaml",
+        "px4.bind_port": "yaml",
+        "px4.launch_owned_px4": "yaml",
+        "px4.auto_flight": "yaml",
+        "px4.autopilot_dir": "yaml",
+        "px4.simulator_host": "yaml",
+        "px4.parameter_file": "yaml",
+        "px4.gcs_bind_host": "yaml",
+        "px4.gcs_bind_port": "yaml",
+        "diagnostics.trial": "yaml",
+        "diagnostics.sample_hz": "yaml",
+        "diagnostics.max_samples": "yaml",
+        "diagnostics.baseline_s": "yaml",
+        "diagnostics.stable_window_s": "yaml",
+        "diagnostics.position_threshold_m": "yaml",
+        "diagnostics.speed_threshold_m_s": "yaml",
+        "diagnostics.pulse_tendon_index": "yaml",
+        "diagnostics.pulse_tension_n": "yaml",
+        "diagnostics.pulse_duration_s": "yaml",
+        "diagnostics.recovery_s": "yaml",
+        "px4.motor_time_constant_s": "yaml"
+      },
+      "source_file": "/tmp/px4-hover8.yaml"
+    }
+  },
+  "robot_mass_kg": {
+    "bare_uav": 0.027,
+    "soft_arm": 0.003,
+    "total": 0.03
+  },
+  "root_attachment": "unchanged rigid root; 9 segments, 8 internal ball joints, 4 tendons",
+  "release_settings": {
+    "spool_target_height_offset_m": 1.0,
+    "release_transition_s": 1.0,
+    "release_hover_rpm_fraction": 1.1
+  },
+  "observation_s_since_release": 8.0,
+  "final_window_s_since_release": [
+    7.0,
+    8.0
+  ],
+  "final_window_rule": "both position error <= 0.10 m and speed <= 0.10 m/s continuously on the existing plant-step measurement cadence throughout final 1 s",
+  "position_threshold_m": 0.1,
+  "speed_threshold_m_s": 0.1,
+  "criteria_status": "provisional diagnostics, unchanged numerical criteria",
+  "sensor_control_hz": 200,
+  "plant_measurement_hz": 1200,
+  "physics_hz": 2400,
+  "saved_sample_hz": 20,
+  "max_saved_samples": 256,
+  "max_launch_attempts": 1,
+  "wall_budget_s_including_startup_landing_shutdown_log_collection": 180,
+  "tendon_commands_n": [
+    0,
+    0,
+    0,
+    0
+  ],
+  "tendon_pulse_permitted": false,
+  "retry_permitted": false,
+  "coordinate_frames": "PX4 local ENU setpoint + configured initial-position offset = MuJoCo world ENU setpoint",
+  "timing_convention": "existing PX4 sensor clock and sequence unchanged; command timestamps and actual pre-step send time since plant release recorded separately from post-step sample time",
+  "baseline_model_matches_previous_trial": true,
+  "previous_two_second_result_unchanged": true,
+  "focused_tests_before_launch": "60 passed (four existing test files)"
+}

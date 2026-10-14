@@ -419,6 +419,7 @@ class Px4RunMetrics:
     exit_detail: str = ""
     final_position_enu_m: Tuple[float, float, float] = (0.0, 0.0, 0.0)
     log_path: Optional[str] = None
+    hover_baseline: Dict[str, Any] = field(default_factory=dict)
     baseline_status: str = "not_observed"
     baseline_mean_position_error_m: float = 0.0
     baseline_max_position_error_m: float = 0.0
@@ -460,6 +461,8 @@ class Px4MujocoRunner:
         self._calibration = cf2x_27g_calibration(parameters=aviary.UAV_PARAMETERS, payload_mass_kg=aviary.ARM_MASS + aviary.PAYLOAD_MASS)
         self._closed = False
         self._last_state = None
+        self._last_position_setpoint = None
+        self._flight_phase_timing = {}
         self._final_actuator_armed = False
         self._last_rpm = np.zeros(4, dtype=float)
         self._tendon_controller = None
@@ -593,6 +596,8 @@ class Px4MujocoRunner:
         self._baseline_stable = True
         self._diagnostic_done = False
         self._diagnostic_phase = "startup"
+        self._last_position_setpoint = None
+        self._flight_phase_timing = {}
         dt_s = 1.0 / self.config.control_freq_hz
         plant_dt_s = 1.0 / self.config.plant_step_freq_hz
         try:
@@ -629,6 +634,7 @@ class Px4MujocoRunner:
                     clock = self._clock(index, start_timestamp_us)
                     yield self.backend.sensor_adapter.sample(initial_truth, clock)
 
+            self._record_flight_phase("px4_bootstrap", self._clock(0, start_timestamp_us))
             self.backend.coordinator.bootstrap(
                 startup_frames(),
                 LockstepBootstrapConfig(
@@ -644,6 +650,16 @@ class Px4MujocoRunner:
                 last_boot_sequence = self.backend.coordinator.last_sent_sequence
                 metrics.plant_release_timestamp_us = self.backend.coordinator.last_sent_timestamp_us
                 metrics.plant_release_sequence = last_boot_sequence
+                self._record_flight_phase("plant_release", self._clock(last_boot_sequence), 0.0)
+                if (self.config.diagnostics or {}).get("trial"):
+                    metrics.hover_baseline.update(
+                        release_velocity_enu_m_s=self.aviary.vel[0].tolist(),
+                        release_rpm=self._last_rpm.tolist(),
+                        release_rpm_over_hover=(self._last_rpm / self.aviary.HOVER_RPM).tolist(),
+                        release_rotor_command_thrust_n=(self.aviary.KF * self._last_rpm**2).tolist(),
+                        gravity_n=float(self.aviary.M * self.aviary.G),
+                        final_window_start_since_release_s=(self.config.diagnostics or {}).get("baseline_s", 0)
+                            - (self.config.diagnostics or {}).get("stable_window_s", 0))
             steps = None if self.config.duration_s is None else int(round(self.config.duration_s * self.config.plant_step_freq_hz))
             px4_stride = self.config.plant_step_freq_hz // self.config.control_freq_hz
             tendon_stride = (
@@ -693,9 +709,10 @@ class Px4MujocoRunner:
                     px4_sequence += 1
                     clock = self._clock(px4_sequence, start_timestamp_us)
                     if self.config.auto_flight:
-                        self.flight_control.send_position_setpoint_enu(
-                            clock.timestamp_us,
-                            self._flight_target_local_enu(elapsed_s),
+                        self._send_position_setpoint(
+                            clock, self._flight_target_local_enu(elapsed_s),
+                            "height_setpoint_transition" if elapsed_s < self.config.release_transition_s else "fixed_target_hover",
+                            (offset - 1) * plant_dt_s,
                         )
                     truth = self.truth_source.sample(self.aviary, dt_s)
                     result = self.backend.step(Px4BackendInput(truth, clock, dt_s))
@@ -1189,6 +1206,25 @@ class Px4MujocoRunner:
         self._last_interaction_command = command
         return command
 
+    def _record_flight_phase(self, phase, clock, time_since_release_s=None):
+        if (self.config.diagnostics or {}).get("trial"):
+            self._flight_phase_timing.setdefault(phase, {
+                "timestamp_us": clock.timestamp_us, "sensor_sequence": clock.sequence,
+                "time_since_release_s": time_since_release_s})
+
+    def _send_position_setpoint(self, clock, setpoint, phase, time_since_release_s=None):
+        """Observe the actual existing send, without changing setpoints or clock."""
+        self.flight_control.send_position_setpoint_enu(clock.timestamp_us, setpoint)
+        self._last_position_setpoint = {
+            "setpoint_local_enu_m": tuple(float(x) for x in setpoint),
+            "setpoint_world_enu_m": tuple(float(x+y) for x, y in zip(setpoint, self.config.initial_position_enu_m)),
+            "setpoint_timestamp_us": clock.timestamp_us,
+            "setpoint_sensor_sequence": clock.sequence,
+            "setpoint_sent_time_since_release_s": time_since_release_s,
+            "flight_phase": phase,
+            "setpoint_transition_complete": phase == "fixed_target_hover"}
+        self._record_flight_phase(phase, clock, time_since_release_s)
+
     def _prepare_auto_flight(self, truth, dt_s: float) -> None:
         """Initialize EKF, establish offboard stream, arm, then spool safely."""
         control = self.flight_control
@@ -1202,10 +1238,10 @@ class Px4MujocoRunner:
         for index in range(preflight_steps):
             sequence = self.backend.coordinator.last_sent_sequence + 1
             clock = self._clock(sequence)
+            self._record_flight_phase(
+                "offboard_warmup" if index >= preflight_steps - warmup_steps else "estimator_preflight", clock)
             if index >= preflight_steps - warmup_steps:
-                control.send_position_setpoint_enu(
-                    clock.timestamp_us, self._spool_target_local_enu()
-                )
+                self._send_position_setpoint(clock, self._spool_target_local_enu(), "offboard_warmup")
             if not mode_requested and index >= preflight_steps - warmup_steps // 2:
                 control.request_offboard_mode()
                 mode_requested = True
@@ -1235,9 +1271,7 @@ class Px4MujocoRunner:
         for index in range(ramp_steps):
             sequence = self.backend.coordinator.last_sent_sequence + 1
             clock = self._clock(sequence)
-            control.send_position_setpoint_enu(
-                clock.timestamp_us, self._spool_target_local_enu()
-            )
+            self._send_position_setpoint(clock, self._spool_target_local_enu(), "arming_rotor_spool")
             if index and index % self.config.control_freq_hz == 0:
                 control.request_offboard_mode()
                 control.request_arm(True)
@@ -1260,6 +1294,7 @@ class Px4MujocoRunner:
     def _land_and_disarm(self, dt_s: float) -> int:
         """Ramp the offboard altitude to a safe height, then disarm on ground."""
         control = self.flight_control
+        self._record_flight_phase("landing_disarming", self._clock(self.backend.coordinator.last_sent_sequence + 1))
         control.request_auto_land()
         if self.config.arm_source == "controller":
             self.aviary.set_scaled_stablesoft_tension_command((0.0,) * 4)
@@ -1288,6 +1323,8 @@ class Px4MujocoRunner:
                 altitude <= self.config.landing_height_enu_m + 0.04
                 and vertical_speed <= 0.25
             ):
+                if not disarm_requested:
+                    self._record_flight_phase("disarming", self._clock(self.backend.coordinator.last_sent_sequence), float(self.aviary.data.time))
                 control.request_arm(False)
                 disarm_requested = True
             elif disarm_requested and index % max(1, self.config.plant_step_freq_hz // 4) == 0:
@@ -1410,8 +1447,23 @@ class Px4MujocoRunner:
             metrics.baseline_mean_position_error_m = self._baseline_sum / self._baseline_count
             metrics.baseline_max_position_error_m = max(metrics.baseline_max_position_error_m, error)
             metrics.baseline_max_speed_m_s = max(metrics.baseline_max_speed_m_s, speed)
+            height = float(self.aviary.pos[0, 2])
+            vertical_speed = float(self.aviary.vel[0, 2])
+            stats = metrics.hover_baseline
+            for label, value in (("height", height), ("vertical_velocity", vertical_speed)):
+                for bound, sign in (("max", 1), ("min", -1)):
+                    key = f"{label}_{bound}"
+                    if key not in stats or sign * value > sign * stats[key]:
+                        stats[key], stats[f"{key}_time_since_release_s"] = value, time_s
             if time_s > d["baseline_s"] - d["stable_window_s"] + 1e-12:
                 self._baseline_stable &= limits_ok and self._final_actuator_armed
+                window = stats.setdefault("final_window", {"count": 0, "error_sum_m": 0.0,
+                    "height_sum_m": 0.0, "max_position_error_m": 0.0, "max_speed_m_s": 0.0})
+                window["count"] += 1
+                window["error_sum_m"] += error
+                window["height_sum_m"] += height
+                window["max_position_error_m"] = max(window["max_position_error_m"], error)
+                window["max_speed_m_s"] = max(window["max_speed_m_s"], speed)
             if time_s >= d["baseline_s"] - 1e-12:
                 self._baseline_rpy = self.aviary.rpy[0].copy()
                 metrics.baseline_status = "passed" if self._baseline_stable else "未在规定窗口内满足悬停判据"
@@ -1439,6 +1491,9 @@ class Px4MujocoRunner:
             health = self.flight_control.health if self.flight_control else None
             self._diagnostic_samples.append({
                 "time_s": time_s, "phase": phase, "armed": self._final_actuator_armed,
+                "time_since_release_s": time_s,
+                "final_target_world_enu_m": self.config.target_position_enu_m,
+                **(self._last_position_setpoint or {}),
                 "position_enu_m": self.aviary.pos[0].tolist(), "velocity_enu_m_s": self.aviary.vel[0].tolist(),
                 "rpy_rad": self.aviary.rpy[0].tolist(), "target_enu_m": self.config.target_position_enu_m,
                 "position_error_m": error, "rpm": self._last_rpm.tolist(),
@@ -1536,6 +1591,7 @@ class Px4MujocoRunner:
             "events": list(self._interaction_events),
             "effective_config": self.config.effective_config,
             "diagnostic_samples": list(getattr(self, "_diagnostic_samples", ())),
+            "flight_phase_timing": self._flight_phase_timing,
             "command_line": tuple(sys.argv),
             "parameter_file_sha256": self._file_sha256(
                 self.config.parameter_file

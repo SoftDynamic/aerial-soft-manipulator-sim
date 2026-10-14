@@ -88,3 +88,20 @@ Lockstep 去重为 deque/set，最多 512 个 packet identity；移出历史的 
 降落完成（2.790833 s 模拟时间），最终 disarmed、rotor/tendon ctrl 零，没有残留 PX4 进程。transport timeout/disconnect 均零；tail log 保留 `vehicle_command lost`、`vehicle_command_ack lost` 和 `Disarming denied: not landed`。Estimator health flags=831，timeout flags 未收到（null），不把缺失 telemetry 当健康证明。物理总质量/最大推力/悬停参数检查一致，未发现这些配置值冲突；有限窗口内的位置/速度 criterion 未满足，不能推断 PX4 永远不能 hover，也不归因给未施加的 tendon 扰动。
 
 [原始 Trial 1 日志](validation/px4_stage_trial1.json) 和 [摘要](validation/px4_stage_summary.json) 随提交保存，负结果没有删除。冻结时实施 diff fingerprint 与最终实现可能因后续无调参的 cleanup/NaN/GUI 时序修正不同；真实测量文件保持原样，模型和 `.params` 的 SHA256 保持一致。
+
+
+## 8 秒无扰动 PX4 hover 诊断（2026-10-14）
+
+本轮仅扩展既有 bounded diagnostic recorder；在原 send 调用捕获实际 local ENU setpoint，并加 configured initial-position offset 得到 world ENU。记录 bootstrap、preflight、Offboard warmup、spool、release、height transition、fixed hover、landing/disarm 的原传感器时钟/序号。没有额外 sensor frame、actuator writer 或控制器改动。高度极值与末窗口统计来自原 1200 Hz 测量节拍，20 Hz 保存 160 样本，上限仍为 256。
+
+[新冻结协议](validation/px4_hover8_protocol.json)：默认 CF2X + StableSoft、px4/manual、headless、四张力零；release offset=1 m、transition=1 s、release RPM fraction=1.1 均未改。独立观察 release 后 8 s，末 7–8 s 连续 error≤0.10 m 且 speed≤0.10 m/s；最多一次真实启动，wall budget 180 s。之前的 2 s 协议及负结果保持原样。
+
+真实 SITL 一次完成（含启动/降落/清理/日志收集 wall 4.828 s）。Release sensor timestamp=14,520,000 µs，seq=2704；首次 flight send 在 plant t=0，stamp=14,525,000 µs。固定目标首次发送于 plant t=1.000 s，stamp=15,525,000 µs、seq=2905；这是原 clock convention 的 5 ms 偏移，不是时间重置。保存样本 t=0.25/0.50/0.75/1.00 s 的实际最后发送 world height 分别为 1.754167/1.504167/1.254167/1.004167 m；t=1.05 s 起的保存值为固定 1.0 m。
+
+初始 vertical velocity=0，release RPM=16806.4155（hover 的 1.101421 倍），实际收到 RPM 对应总 commanded thrust=0.357024 N，重力约 0.2943 N。全测量节拍 height max=1.138586 m@0.7475 s、min=0.834221 m@2.4700 s，正/负高度误差 +0.138586/−0.165779 m；全程 max position error=0.165889 m、max speed=0.330529 m/s。保存样本在 2.5–8 s vertical velocity 均为正，高度从下方趋近目标，未见再次换向；不根据低频曲线计算短时峰值。
+
+末 1 s 的 1200 个测量点：max error=0.031681 m、max speed=0.011957 m/s、mean error=0.027402 m，**通过冻结判据**。8 s 末 height=0.979524 m、vertical velocity=+0.006690 m/s、3D error=0.023617 m、speed=0.011462 m/s。残余高度误差仍在减小，不能声称零偏差、无限时间稳定或重复性已验证。这支持 startup/release transient 解释，并说明旧 2 s 窗口不足以建立稳态表现；单次无消融试验不能证明唯一因果。
+
+Rotor saturation=0、timeout/disconnect=0；全部样本 armed/Offboard、tendon command/force 零，没有 pulse。最终降落并 disarmed，无残留 PX4 进程。估计高度与 ground truth 的保存时刻最大差约 0.010191 m，末差 +0.002882 m；GCS telemetry age 未记录，不能据此认定 estimator lag 为原因。Health flags=831、timeout flags=null；尾日志保留 vehicle command/ACK lost 和未落地时 disarm denied，缺失 telemetry 不等于健康证明。
+
+[摘要](validation/px4_hover8_summary.json) 与 [完整有界试验记录](validation/px4_hover8_trial1.json) 随提交保存。聚焦测试 60 passed（既有四个文件，含实际 headless MuJoCo 短步进与 fake PX4 回归），真实物理结论仅来自本次真实 SITL。日常配置、物理参数、PX4 gain 文件、挂载及原 X650 worktree 均未改。
