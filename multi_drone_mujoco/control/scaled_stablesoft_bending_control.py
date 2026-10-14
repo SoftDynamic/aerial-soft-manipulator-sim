@@ -15,20 +15,22 @@ from multi_drone_mujoco.control.tendon_modal_static_feedforward import (
     BendingModalStaticFeedforwardConfig,
 )
 
+from multi_drone_mujoco.models.components.tendon_drive import BASELINE_MAX_TENSION_N
+
 
 CONTROL_FREQUENCY_HZ = 240
 MAX_ACCELERATION_M_S2 = 0.04
 MAX_VELOCITY_M_S = 0.002
 MAX_REFERENCE_L1_M = 0.0003
 MAX_CALIBRATED_ACTUAL_L1_M = 0.0004
-MAX_TENSION_N = 0.01
+MAX_TENSION_N = BASELINE_MAX_TENSION_N
 KP_N_PER_M = 300.0
 KD_N_S_PER_M = 0.02
 STATIC_STIFFNESS_N_PER_M = (52.58, 52.58)
 ZERO_PRELOAD_N = (0.0, 0.0, 0.0, 0.0)
 
 
-def scaled_stablesoft_bending_controller_config(control_frequency_hz=CONTROL_FREQUENCY_HZ):
+def scaled_stablesoft_bending_controller_config(control_frequency_hz=CONTROL_FREQUENCY_HZ, max_tension_n=MAX_TENSION_N):
     """Return the validated 240 Hz, zero-preload controller configuration."""
     if control_frequency_hz != CONTROL_FREQUENCY_HZ:
         raise ValueError(
@@ -46,7 +48,7 @@ def scaled_stablesoft_bending_controller_config(control_frequency_hz=CONTROL_FRE
             kd_n_s_per_m=KD_N_S_PER_M,
         ),
         allocator=BoundedTendonAllocatorConfig(
-            max_tension_n=MAX_TENSION_N,
+            max_tension_n=max_tension_n,
             bias_tension_n=ZERO_PRELOAD_N,
         ),
         static_feedforward=BendingModalStaticFeedforwardConfig(
@@ -60,10 +62,11 @@ def scaled_stablesoft_bending_controller_config(control_frequency_hz=CONTROL_FRE
 def make_scaled_stablesoft_bending_controller(
     tendon_names,
     control_frequency_hz=CONTROL_FREQUENCY_HZ,
+    max_tension_n=MAX_TENSION_N,
 ):
     """Create a controller using manifest-resolved tendon names."""
     return TendonCompatibleAccelerationController(
-        scaled_stablesoft_bending_controller_config(control_frequency_hz),
+        scaled_stablesoft_bending_controller_config(control_frequency_hz, max_tension_n),
         tendon_names,
     )
 
@@ -73,8 +76,13 @@ def initialize_scaled_stablesoft_feedback(env):
     bindings = env.SCALED_STABLESOFT_TENDON_BINDINGS
     ids = [binding.tendon_id for binding in bindings]
     controller = make_scaled_stablesoft_bending_controller(
-        [binding.tendon_name for binding in bindings]
+        [binding.tendon_name for binding in bindings],
+        max_tension_n=env.SCALED_STABLESOFT_TENDON_DRIVE_SPEC.max_tension,
     )
+    for binding in bindings:
+        limits = env.model.actuator_ctrlrange[binding.actuator_id]
+        if tuple(limits) != (0.0, controller.config.allocator.max_tension_n):
+            raise ValueError("controller and compiled tendon actuator limits differ")
     controller.reset(env.data.ten_length[ids], env.data.ten_velocity[ids])
     controller.enable()
     env.set_scaled_stablesoft_tension_command((0.0,) * len(bindings))

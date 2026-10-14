@@ -124,3 +124,22 @@ def test_bootstrap_sends_without_advancing_physics_and_bounds_frame_order():
     assert item._last_advanced_timestamp_us == -1
     with pytest.raises(ValueError, match="last sent"):
         item.exchange(frame(3000, 4))
+
+
+def test_long_sequence_deduplication_is_bounded_and_expired_stale_stays_rejected():
+    item, transport = coordinator()
+    for i in range(1, 10001):
+        transport.queue_actuator(packet(i * 1000, i))
+        result = item.exchange(frame(i * 1000, i))
+        assert result.advance_physics and result.command.sequence == i
+        assert len(item._seen_packets) <= 512
+        assert len(item._packet_history) <= 512
+    assert (1000, 1) not in item._seen_packets
+    transport.queue_actuator(packet(1000, 1))
+    transport.queue_actuator(packet(10000000, 10000))
+    transport.queue_actuator(packet(10001000, 10001))
+    result = item.exchange(frame(10001000, 10001))
+    assert result.advance_physics and result.command.sequence == 10001
+    transport.queue_actuator(packet(10003000, 10003))
+    result = item.exchange(frame(10002000, 10002))
+    assert result.status == LockstepStatus.FUTURE_PACKET and not result.advance_physics

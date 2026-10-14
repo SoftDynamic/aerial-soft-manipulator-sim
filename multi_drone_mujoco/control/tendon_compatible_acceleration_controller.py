@@ -39,9 +39,6 @@ from multi_drone_mujoco.control.tendon_modal_static_feedforward import (
 )
 
 
-_MAX_TENSION_N = 0.01
-
-
 def _vector(name, values, size):
     try:
         result = np.asarray(tuple(values), dtype=float)
@@ -79,8 +76,8 @@ class TendonCompatibleAccelerationControllerConfig:
             raise TypeError(
                 "static_feedforward must be BendingModalStaticFeedforwardConfig or None"
             )
-        if self.allocator.max_tension_n != _MAX_TENSION_N:
-            raise ValueError("allocator max_tension_n must remain exactly 0.01 N")
+        if not np.isfinite(self.allocator.max_tension_n) or self.allocator.max_tension_n <= 0:
+            raise ValueError("allocator max_tension_n must be finite and positive")
         if self.allocator.bias_tension_n != (0.0, 0.0, 0.0, 0.0):
             raise ValueError("Gate C2-C2 v1 fixed preload must remain zero")
 

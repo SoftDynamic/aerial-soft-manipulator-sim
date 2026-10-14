@@ -21,17 +21,28 @@ manual groups retain the native slider values.
 
 Use `--headless --duration 0.025 --export-xml /tmp/uav_arm.xml` for a short
 run and XML export. Inspect other options with `python scripts/run_sim.py --help`.
-PX4 selections connect to a prepared peer; `--launch-owned-px4` explicitly
-starts an installed compatible PX4. `scripts/run_px4_viewer.sh` remains a
-small convenience wrapper: `mouse`, `keyboard-force`, and `joint` select
-px4/manual; `tendon` selects px4/controller.
+Daily settings live in [configs/sim.yaml](configs/sim.yaml): robot physics,
+simulation, owned PX4 endpoints/profile, and optional diagnostics. Explicit CLI
+values override YAML, which overrides verified source defaults. Every run saves
+its effective values and their origins under `simulation.log_dir`.
 
+GUI duration defaults to unlimited, ending when its native window closes.
+Headless runs default to five simulated seconds. `--duration` bounds either mode.
+`python scripts/run_sim.py --uav-source px4` launches the configured local owned
+SITL and uses the existing bootstrap/Offboard/arm/ramp/landing lifecycle. External
+peers require explicit configuration with `launch_owned_px4: false` and
+`auto_flight: false`; they are never automatically armed.
+
+The redundant viewer wrapper and its low-level CLI flags have been removed.
+The frozen stage validation recorded **未在规定窗口内满足悬停判据** in the
+2 s undisturbed baseline, so it did not launch a pulse trial. See the
+[measurement summary](docs/validation/px4_stage_summary.json) and
+[raw Trial 1 log](docs/validation/px4_stage_trial1.json).
 See [simulation architecture and debugging index](docs/simulation_architecture.md)
 for parameters, call chains, commands and actual verification;
 see [PX4 operations](docs/px4_sitl_operations.md) for the supported SITL workflow.
 
-The arm attachment remains fixed with eight internal ball joints. A passive
-two-axis root attachment belongs to Commit 3. Historical RL task environments,
+The arm attachment remains fixed with eight internal ball joints. The root attachment is unchanged in this stage. Historical RL task environments,
 training demos, GPU batching, scans and report generators have been retired.
 Packaging remains in `pyproject.toml` and `setup.py`.
 

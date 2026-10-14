@@ -22,7 +22,7 @@ from multi_drone_mujoco.models.components.tendon_drive import (
 )
 from multi_drone_mujoco.models.parameters import (
     CF2X_3G_PAYLOAD_PARAMS,
-    DRONE_PARAMS,
+    ResolvedUavParameters,
 )
 from multi_drone_mujoco.utils.enums import DroneModel
 
@@ -61,6 +61,7 @@ def build_aviary_mjcf(
     scaled_stablesoft_tendon_drive: Optional[
         IdealTendonTensionSpec
     ] = None,
+    uav_parameters: Optional[ResolvedUavParameters] = None,
 ) -> AviaryMjcfBuild:
     """Generate XML and manifests for an aviary in one build pass."""
     if not isinstance(integrator, str):
@@ -124,7 +125,7 @@ def build_aviary_mjcf(
     init_xyzs = np.asarray(init_xyzs).reshape(num_drones, 3)
     init_rpys = np.asarray(init_rpys).reshape(num_drones, 3)
     meshdir = str(CF2_MESH_DIR)
-    params = DRONE_PARAMS[drone_model]
+    params = uav_parameters or ResolvedUavParameters.resolve(drone_model)
 
     # Visual and collision meshes
     visual_meshes = "\n".join(
@@ -209,7 +210,7 @@ def build_aviary_mjcf(
     <body name="{prefix}" pos="{x} {y} {z}" quat="{qw} {qx} {qy} {qz}">
       <freejoint name="{prefix}_joint"/>
       <inertial pos="0 0 0" mass="{mass}" diaginertia="{ixx} {iyy} {izz}"/>
-      <geom name="{prefix}_collision" type="cylinder" size="{params['collision_r']} {params['collision_h'] / 2}" rgba="0 0 0 0" contype="1" conaffinity="1"/>
+      <geom name="{prefix}_collision" type="cylinder" pos="0 0 {params['collision_z_offset']}" size="{params['collision_r']} {params['collision_h'] / 2}" rgba="0 0 0 0" contype="1" conaffinity="1"/>
       <geom mesh="cf2_vis_0" material="propeller_plastic" class="visual"/>
       <geom mesh="cf2_vis_1" material="medium_gloss_plastic" class="visual"/>
       <geom mesh="cf2_vis_2" material="polished_gold" class="visual"/>

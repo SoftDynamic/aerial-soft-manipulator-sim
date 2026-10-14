@@ -511,41 +511,11 @@ def test_viewer_overlay_includes_px4_pose_actuator_and_frequency_state(monkeypat
     adapter.close()
 
 
-@pytest.mark.parametrize(
-    ("preset", "mode"),
-    (("mouse", "mouse_force"), ("tendon", "tendon_modal"),
-     ("keyboard-force", "keyboard_force"), ("joint", "joint_torque")),
-)
-def test_short_viewer_launcher_dry_run_presets_and_safe_passthrough(
-    tmp_path, preset, mode
-):
+def test_daily_entry_retires_redundant_wrapper_and_legacy_flags():
+    from scripts.run_sim import build_parser
     root = Path(__file__).resolve().parents[2]
-    autopilot = tmp_path / "PX4 checkout with spaces"
-    autopilot.mkdir()
-    env = {
-        "PATH": "/usr/bin:/bin",
-        "MUJOCO_UAV_PYTHON": "/bin/true",
-        "PX4_AUTOPILOT_DIR": str(autopilot),
-        "PX4_VIEWER_LOG_DIR": str(tmp_path / "logs with spaces"),
-    }
-    result = subprocess.run(
-        [
-            "bash", str(root / "scripts/run_px4_viewer.sh"), preset,
-            "--dry-run", "--", "--duration", "17", "--log-dir", "a b",
-        ],
-        cwd="/", env=env, text=True, capture_output=True, check=True,
-    )
-    assert "scripts/run_sim.py" in result.stdout
-    assert "--uav-source px4" in result.stdout
-    assert f"--arm-source {'controller' if preset == 'tendon' else 'manual'}" in result.stdout
-    assert f"--interaction-mode {mode}" in result.stdout
-    assert "--duration 17" in result.stdout
-    assert "a\\ b" in result.stdout
-    assert "PX4\\ checkout\\ with\\ spaces" in result.stdout
-
-
-def test_short_viewer_launcher_is_valid_bash():
-    root = Path(__file__).resolve().parents[2]
-    subprocess.run(
-        ["bash", "-n", str(root / "scripts/run_px4_viewer.sh")], check=True
-    )
+    assert not (root / "scripts/run_px4_viewer.sh").exists()
+    options = {option for action in build_parser()._actions for option in action.option_strings}
+    assert options == {"-h", "--help", "--config", "--uav-source", "--arm-source",
+                       "--initial-position", "--target-position", "--arm-acceleration",
+                       "--duration", "--headless", "--export-xml", "--visual-mode"}

@@ -43,6 +43,7 @@ class Px4InteractionViewer:
             aviary.model,
             aviary.data,
             key_callback=lambda keycode: self._events.put(int(keycode)),
+            show_left_ui=True, show_right_ui=True,
         )
         self._uav_body_id = mujoco.mj_name2id(aviary.model, mujoco.mjtObj.mjOBJ_BODY, "drone0")
         self._closed = False

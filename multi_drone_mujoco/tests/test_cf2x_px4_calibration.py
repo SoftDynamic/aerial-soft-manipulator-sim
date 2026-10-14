@@ -78,3 +78,25 @@ def test_repository_parameter_files_freeze_real_probed_yaw_and_hover_model():
         assert parameters["THR_MDL_FAC"] == "1.0"
     assert rigid["MPC_THR_HOVER"] == "0.444444444"
     assert passive["MPC_THR_HOVER"] == "0.493827160"
+
+
+def test_resolved_payload_and_parameter_file_compatibility():
+    import pytest
+    from multi_drone_mujoco.models.parameters import ResolvedUavParameters
+    from multi_drone_mujoco.backends.cf2x_px4 import validate_cf2x_px4_parameters
+    physical = ResolvedUavParameters.resolve()
+    cal = cf2x_27g_calibration(parameters=physical, payload_mass_kg=0.003)
+    assert cal.mass_kg == 0.030
+    assert cal.max_rpm == cf2x_27g_calibration().max_rpm
+    assert cal.hover_rpm > cf2x_27g_calibration().hover_rpm
+    root = Path(__file__).resolve().parents[2]
+    values = read_px4_parameter_file(root / "configs/px4/cf2x_scaled_stablesoft_passive.params")
+    validate_cf2x_px4_parameters(values, cal)
+    for name in ("CA_ROTOR0_PX", "CA_ROTOR1_PY", "CA_ROTOR2_KM", "MPC_THR_HOVER", "THR_MDL_FAC"):
+        bad = dict(values); bad[name] = str(float(values[name]) + 0.001)
+        with pytest.raises(ValueError, match=name): validate_cf2x_px4_parameters(bad, cal)
+    for name in ("mass", "kf", "km", "thrust2weight_ratio"):
+        modified = ResolvedUavParameters.resolve(overrides={name: physical[name] * 1.01})
+        with pytest.raises(ValueError, match="does not support"):
+            cf2x_27g_calibration(parameters=modified)
+    assert cf2x_pwm_to_rpm_config(calibration=cal).rpm_max == cal.max_rpm

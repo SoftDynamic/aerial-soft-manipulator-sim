@@ -31,7 +31,7 @@ from multi_drone_mujoco.models.components.tendon_drive import (
 from multi_drone_mujoco.models.mjcf_builder import build_aviary_mjcf
 from multi_drone_mujoco.models.parameters import (
     CF2X_3G_PAYLOAD_PARAMS,
-    DRONE_PARAMS,
+    ResolvedUavParameters,
 )
 from multi_drone_mujoco.utils.enums import DroneModel, Physics, ActionType, ObservationType, ImageType
 
@@ -81,6 +81,7 @@ class BaseAviary(gym.Env):
         integrator: str = "RK4",
         uav_source: str = "px4",
         arm_source: str = "manual",
+        uav_parameters: Optional[ResolvedUavParameters] = None,
     ):
         """Initialize the aviary.
 
@@ -190,7 +191,8 @@ class BaseAviary(gym.Env):
         self.INTEGRATOR = integrator
 
         # Load drone parameters
-        params = DRONE_PARAMS[drone_model]
+        params = uav_parameters or ResolvedUavParameters.resolve(drone_model)
+        self.UAV_PARAMETERS = params
         self.DRONE_MASS = params["mass"]
         self.PAYLOAD_MASS = CF2X_3G_PAYLOAD_PARAMS["mass"] if enable_3g_payload else 0.0
         if passive_arm is not None:
@@ -265,6 +267,7 @@ class BaseAviary(gym.Env):
             init_xyzs=self.INIT_XYZS,
             init_rpys=self.INIT_RPYS,
             obstacles=obstacles,
+            uav_parameters=self.UAV_PARAMETERS,
             vision=vision_attributes,
             timestep=self.SIM_TIMESTEP,
             integrator=self.INTEGRATOR,
@@ -948,7 +951,8 @@ class BaseAviary(gym.Env):
         """
         if self.render_mode == "human":
             if self._viewer is None:
-                self._viewer = mujoco.viewer.launch_passive(self.model, self.data)
+                self._viewer = mujoco.viewer.launch_passive(self.model, self.data,
+                    key_callback=getattr(self, "_viewer_key_callback", None))
             self._viewer.sync()
         elif self.render_mode == "rgb_array":
             if self._renderer is None:

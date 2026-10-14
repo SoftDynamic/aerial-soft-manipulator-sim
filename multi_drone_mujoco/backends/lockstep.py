@@ -1,5 +1,6 @@
 """Bounded deterministic lockstep between sensor and actuator packets."""
 
+from collections import deque
 from dataclasses import dataclass
 from enum import Enum
 import math
@@ -90,6 +91,8 @@ class LockstepCoordinator:
         self._last_sent_timestamp_us = -1
         self._last_sent_sequence = -1
         self._seen_packets: Set[Tuple[int, int]] = set()
+        self._packet_history = deque()
+        self._deduplication_limit = 512
 
     def reset(self) -> None:
         if self._closed:
@@ -101,6 +104,7 @@ class LockstepCoordinator:
         self._last_sent_timestamp_us = -1
         self._last_sent_sequence = -1
         self._seen_packets.clear()
+        self._packet_history.clear()
 
     @property
     def will_exchange(self) -> bool:
@@ -175,6 +179,9 @@ class LockstepCoordinator:
                         frame, LockstepStatus.TIMED_OUT, "only duplicate packets received"
                     )
                 continue
+            if len(self._packet_history) == self._deduplication_limit:
+                self._seen_packets.remove(self._packet_history.popleft())
+            self._packet_history.append(identity)
             self._seen_packets.add(identity)
             if packet.timestamp_us < frame.timestamp_us:
                 if remaining <= 0.0:

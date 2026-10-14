@@ -1,5 +1,7 @@
 # PX4 SITL operations and compatibility
 
+Current daily commands and configuration are documented in [simulation architecture](simulation_architecture.md) and [configs/sim.yaml](../configs/sim.yaml). The command lines and launcher descriptions below are historical P8–P11 evidence; their low-level CLI flags and viewer wrapper have been retired. External peers now require explicit configuration with owned launch and automatic flight both disabled.
+
 ## Verified compatibility target
 
 The real-integration target is PX4 tag `v1.17.0`, commit

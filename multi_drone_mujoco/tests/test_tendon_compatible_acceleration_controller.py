@@ -48,9 +48,11 @@ def _controller(names=NAMES):
     return result
 
 
-def test_composite_requires_exact_legacy_physical_limits():
-    with pytest.raises(ValueError, match="exactly 0.01"):
-        _config(max_tension_n=0.02)
+def test_composite_accepts_configured_limit_and_retains_zero_preload():
+    assert _config(max_tension_n=0.02).allocator.max_tension_n == 0.02
+    for value in (0, -1, float("nan"), float("inf")):
+        with pytest.raises(ValueError):
+            _config(max_tension_n=value)
     with pytest.raises(ValueError, match="preload must remain zero"):
         _config(bias_tension_n=(0.001,) * 4)
 

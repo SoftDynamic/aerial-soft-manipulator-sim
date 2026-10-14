@@ -16,6 +16,9 @@ def _finite_real(name: str, value) -> float:
     return normalized
 
 
+BASELINE_MAX_TENSION_N = 0.01
+
+
 @dataclass(frozen=True)
 class IdealTendonTensionSpec:
     """Configure an ideal, internally instantaneous tendon tension source.

@@ -185,9 +185,14 @@ def test_four_cli_paths_compute_at_intended_frequency_and_keep_manual_values(mon
         return runner
 
     monkeypatch.setattr(run_sim.Px4MujocoRunner, "create_default", fake_px4)
+    import yaml
+    cfg = tmp_path / "sim.yaml"
+    cfg.write_text(yaml.safe_dump({"simulation": {"log_dir": str(tmp_path)}, "px4": {
+        "mode": "remote", "launch_owned_px4": False, "auto_flight": False,
+        "gcs_bind_host": None, "gcs_bind_port": None}}))
     assert run_sim.main([
-        "--uav-source", uav, "--arm-source", arm, "--headless", "--duration", "0.025",
-        "--log-dir", str(tmp_path), "--export-xml", str(tmp_path / "model.xml"),
+        "--config", str(cfg), "--uav-source", uav, "--arm-source", arm, "--headless", "--duration", "0.025",
+        "--export-xml", str(tmp_path / "model.xml"),
     ]) == 0
     assert counts == {"feedback": 6 if arm == "controller" else 0, "physics": 30}
     env = captured[0]
@@ -362,3 +367,124 @@ def test_px4_native_mouse_wrench_keeps_selected_body_and_torque_then_releases(mo
     finally:
         adapter.close()
         runner.close()
+
+
+def test_config_precedence_paths_and_effective_log(tmp_path):
+    import json
+    import yaml
+    config = tmp_path / "nested" / "sim.yaml"
+    config.parent.mkdir()
+    config.write_text(yaml.safe_dump({"simulation": {"duration_s": 0.02,
+        "initial_position_enu_m": [1, 2, 3], "log_dir": "logs", "export_xml": "model.xml"},
+        "robot": {"soft_arm": {"max_tension_n": 0.02}}}))
+    args = run_sim.resolve_config(run_sim.build_parser().parse_args(["--config", str(config), "--headless"]))
+    assert args.initial_position == [1, 2, 3]
+    assert args.duration == 0.02
+    assert args.log_dir == str(config.parent / "logs")
+    assert args.export_xml == config.parent / "model.xml"
+    origins = args.effective_config["origins"]
+    assert origins["simulation.duration_s"] == "yaml"
+    assert origins["robot.uav.mass_kg"] == "default"
+    assert origins["simulation.gui"] == "cli"
+    assert run_sim.main(["--config", str(config), "--headless", "--duration", "0.01", "--initial-position", "0,0,1"]) == 0
+    saved = json.loads(next((config.parent / "logs").glob("effective-*.json")).read_text())
+    assert saved["values"]["simulation"]["duration_s"] == 0.01
+    assert saved["origins"]["simulation.duration_s"] == "cli"
+
+
+def test_resolved_physical_snapshot_reaches_compiled_model_and_controller(tmp_path):
+    import yaml
+    from multi_drone_mujoco.models.parameters import DRONE_PARAMS
+    original = dict(DRONE_PARAMS[DroneModel.CF2X])
+    config = tmp_path / "sim.yaml"
+    config.write_text(yaml.safe_dump({"robot": {"uav": {"mass_kg": 0.028, "ixx_kg_m2": 1.5e-5,
+        "arm_length_m": 0.04, "thrust2weight_ratio": 2.3, "collision_radius_m": 0.055},
+        "soft_arm": {"total_length_m": 0.09, "total_mass_kg": 0.004, "body_radius_m": 0.004,
+                     "max_tension_n": 0.02, "joint_stiffness_nm_per_rad": 0.0035}}}))
+    args = run_sim.resolve_config(run_sim.build_parser().parse_args(["--config", str(config), "--headless", "--arm-source", "controller"]))
+    env = run_sim.create_manual_env(args)
+    try:
+        assert env.UAV_PARAMETERS is args.uav_parameters
+        assert env.model.body("drone0").mass[0] == 0.028
+        assert env.model.body("drone0").inertia[0] == 1.5e-5
+        assert env.M == pytest.approx(0.032)
+        assert sum(env.model.body_mass) == pytest.approx(env.M)
+        assert env.MAX_THRUST == pytest.approx(2.3 * 0.028 * 9.81)
+        np.testing.assert_allclose(env.model.actuator_ctrlrange[env.ROTOR_CONTROL_ADDRESSES[0], 1], env.MAX_THRUST / 4)
+        assert env.SCALED_STABLESOFT_ARM_SPEC.total_length == 0.09
+        assert env.SCALED_STABLESOFT_ARM_SPEC.joint_stiffness == 0.0035
+        controller, ids = initialize_scaled_stablesoft_feedback(env)
+        assert controller.config.allocator.max_tension_n == 0.02
+        for binding in env.SCALED_STABLESOFT_TENDON_BINDINGS:
+            assert env.model.actuator_ctrlrange[binding.actuator_id, 1] == 0.02
+        update_scaled_stablesoft_feedback(env, controller, ids, (0.005, 0.0))
+        assert max(env._automatic_tendon_command_n) <= 0.02
+        env.step()
+    finally: env.close()
+    assert DRONE_PARAMS[DroneModel.CF2X] == original
+
+
+def test_default_xml_mechanics_and_actuators_match_previous_commit(tmp_path):
+    import sys
+    root = Path(__file__).resolve().parents[2]
+    # Evaluate the old builder against the unchanged component builders.
+    source = subprocess.check_output(["git", "show", "7faf780:multi_drone_mujoco/models/mjcf_builder.py"], cwd=root, text=True)
+    scope = {"__file__": str(root / "multi_drone_mujoco/models/mjcf_builder.py"), "__name__": "_baseline_builder"}
+    import types
+    module = types.ModuleType("_baseline_builder")
+    module.__dict__.update(scope)
+    sys.modules[module.__name__] = module
+    exec(compile(source, "baseline", "exec"), module.__dict__)
+    args = run_sim.resolve_config(run_sim.build_parser().parse_args(["--headless"]))
+    env = run_sim.create_manual_env(args)
+    try:
+        build = module.build_aviary_mjcf(1, DroneModel.CF2X, np.array([[0, 0, 1]]), np.zeros((1, 3)),
+            timestep=1/2400, integrator="implicitfast", scaled_stablesoft_arm=args.arm_spec,
+            scaled_stablesoft_visual=env.SCALED_STABLESOFT_VISUAL_SPEC, scaled_stablesoft_tendon_drive=args.tendon_drive)
+        old = mujoco.MjModel.from_xml_string(build.xml)
+        for name in ("body_mass", "body_inertia", "body_pos", "body_parentid", "body_jntnum",
+                     "jnt_type", "jnt_stiffness", "dof_damping", "site_pos", "actuator_gear", "actuator_ctrlrange"):
+            np.testing.assert_array_equal(getattr(env.model, name), getattr(old, name))
+        root_id = env.model.body(env.SCALED_STABLESOFT_ARM_MANIFEST.segment_body_names[0]).id
+        assert env.model.body_parentid[root_id] == env.model.body("drone0").id
+        assert env.model.body_jntnum[root_id] == 0
+    finally: env.close()
+
+
+def test_gui_unlimited_explicit_duration_and_close_past_300(monkeypatch):
+    import glfw
+    args = run_sim.resolve_config(run_sim.build_parser().parse_args([]))
+    assert args.duration is None
+    assert run_sim.resolve_config(run_sim.build_parser().parse_args(["--headless"])).duration == 5.0
+    assert run_sim.resolve_config(run_sim.build_parser().parse_args(["--duration", "301"])).duration == 301
+    calls = {"steps": 0}
+    env = SimpleNamespace(CTRL_FREQ=1, CTRL_TIMESTEP=1, pos=np.array([[0, 0, 1]]), model=None,
+        data=SimpleNamespace(xfrc_applied=np.zeros((1, 6))), reset=lambda: None,
+        clear_automatic_commands=lambda: None)
+    env.step = lambda: calls.__setitem__("steps", calls["steps"] + 1)
+    from contextlib import nullcontext
+    def launch(*a, **kw):
+        kw["key_callback"](glfw.KEY_SPACE)
+        return SimpleNamespace(is_running=lambda: calls["steps"] < 302, sync=lambda: None,
+            lock=nullcontext, cam=SimpleNamespace(lookat=np.zeros(3), distance=0), close=lambda: None)
+    monkeypatch.setattr(mujoco.viewer, "launch_passive", launch)
+    monkeypatch.setattr(run_sim.time, "sleep", lambda _: None)
+    run_sim.run_manual(env, args)
+    assert calls["steps"] == 302
+    calls["steps"] = 0
+    args.duration = 2
+    run_sim.run_manual(env, args)
+    assert calls["steps"] == 2
+
+
+def test_cli_paths_follow_cwd_and_remote_auto_arm_is_rejected(tmp_path, monkeypatch):
+    import yaml
+    cfg = tmp_path / "config" / "sim.yaml"
+    cfg.parent.mkdir()
+    cfg.write_text(yaml.safe_dump({"simulation": {"export_xml": "model.xml"}}))
+    monkeypatch.chdir(tmp_path)
+    args = run_sim.resolve_config(run_sim.build_parser().parse_args(["--config", str(cfg), "--export-xml", "cli.xml"]))
+    assert args.export_xml == tmp_path / "cli.xml"
+    cfg.write_text(yaml.safe_dump({"px4": {"mode": "remote", "launch_owned_px4": False}}))
+    with pytest.raises(ValueError, match="automatic arming"):
+        run_sim.resolve_config(run_sim.build_parser().parse_args(["--config", str(cfg)]))

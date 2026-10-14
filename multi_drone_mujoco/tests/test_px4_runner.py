@@ -39,6 +39,9 @@ class FakeAviary:
         self.actions = []
         self.closed = False
         self.SCALED_STABLESOFT_ARM_MANIFEST = None
+        from multi_drone_mujoco.models.parameters import ResolvedUavParameters
+        self.UAV_PARAMETERS = ResolvedUavParameters.resolve()
+        self.ARM_MASS = self.PAYLOAD_MASS = 0.0
         self.HOVER_RPM = 15000.0
         self._generated_xml = '<mujoco model="fake"/>'
         self.data = SimpleNamespace(ncon=0, ctrl=np.zeros(0))
@@ -222,7 +225,7 @@ def test_fake_runner_bootstraps_then_advances_physics_and_closes(tmp_path):
     assert aviary.closed
     assert Path(metrics.log_path).is_file()
     payload = json.loads(Path(metrics.log_path).read_text())
-    assert payload["schema_version"] == 4
+    assert payload["schema_version"] == 5
     assert payload["started_utc"] < payload["ended_utc"]
     assert payload["metrics"]["log_path"] == metrics.log_path
     assert transport.health.state.value == "closed"
@@ -416,3 +419,211 @@ def test_headless_joint_diagnostic_replay_writes_only_arm_dof_and_clears(tmp_pat
         np.count_nonzero(np.delete(item, target_dof)) == 0 for item in before
     )
     np.testing.assert_array_equal(created.aviary.data.qfrc_applied, 0.0)
+
+
+def _diagnostic_runner(tmp_path, trial="pulse"):
+    from collections import deque
+    import yaml
+    from scripts.run_sim import resolve_config, build_parser
+    file = tmp_path / "sim.yaml"
+    file.write_text(yaml.safe_dump({"simulation": {"uav_source": "px4", "gui": False, "duration_s": 7.3},
+                                    "diagnostics": {"trial": trial}}))
+    args = resolve_config(build_parser().parse_args(["--config", str(file)]))
+    config = Px4RunnerConfig(**args.px4, gui=False, plant="active_arm", duration_s=7.3,
+                             diagnostics=args.diagnostics, log_dir=tmp_path)
+    runner = Px4MujocoRunner.create_default(config)
+    runner.aviary.reset()
+    runner._diagnostic_samples = deque(maxlen=256)
+    runner._baseline_sum = 0.0
+    runner._baseline_count = 0
+    runner._baseline_stable = True
+    runner._diagnostic_done = False
+    runner._final_actuator_armed = True
+    runner.flight_control = None
+    return runner
+
+
+@pytest.mark.parametrize("stable", [True, False])
+def test_diagnostic_baseline_gate_real_actuator_pulse_and_full_rate_peaks(tmp_path, stable):
+    from multi_drone_mujoco.backends.px4_runner import Px4RunMetrics
+    runner = _diagnostic_runner(tmp_path)
+    metrics = Px4RunMetrics()
+    env = runner.aviary
+    try:
+        tip = runner._arm_tip_relative()
+        dt = 1 / 1200
+        for index in range(1, 2401):
+            runner._diagnostic_tension((index-1)*dt, metrics)
+            metrics.physics_steps = index
+            runner._measure_diagnostic(index*dt, 0.02 if stable else 0.11, 0.03, tip, tip, metrics)
+            assert not np.any(env.data.ctrl[4:])
+        assert metrics.baseline_status == ("passed" if stable else "未在规定窗口内满足悬停判据")
+        assert metrics.interaction_recovery_time_s is None
+        runner._diagnostic_tension(2.0, metrics)
+        if not stable:
+            assert runner._diagnostic_done
+            assert metrics.pulse_start_s is None
+            assert not np.any(env.data.ctrl[4:])
+            return
+        assert metrics.pulse_start_s == 2.0
+        rotor = env.ROTOR_CONTROL_ADDRESSES[0]
+        env.set_rotor_rpm_command(np.sqrt(np.array([0.01, 0.02, 0.03, 0.04]) / env.KF))
+        expected_rotor = env._rotor_thrust_command_n[0].copy()
+        bindings = env.SCALED_STABLESOFT_TENDON_BINDINGS
+        env.step()
+        actual = [env.data.actuator_force[b.output_address] for b in bindings]
+        assert actual == pytest.approx([0.001, 0, 0, 0])
+        np.testing.assert_array_equal(env.data.ctrl[rotor], expected_rotor)
+        metrics.physics_steps = 2401  # deliberately off saved sample cadence
+        runner._measure_diagnostic(2+dt, 0.15, 0.25, tip, tip, metrics)
+        assert metrics.diagnostic_peak_position_error_m == 0.15
+        assert metrics.diagnostic_peak_speed_m_s == 0.25
+        assert metrics.actual_pulse_max_tension_n == 0.001
+        assert len(runner._diagnostic_samples) == 40
+        runner._diagnostic_tension(2.3-dt, metrics)
+        assert env.data.ctrl[bindings[0].control_address] == 0.001
+        runner._diagnostic_tension(2.3, metrics)
+        assert metrics.pulse_release_s == 2.3
+        assert metrics.pulse_release_s-metrics.pulse_start_s == pytest.approx(0.30)
+        assert [env.data.ctrl[b.control_address] for b in bindings] == [0]*4
+        env.step()
+        assert [env.data.actuator_force[b.output_address] for b in bindings] == [0]*4
+        metrics.physics_steps = 8760
+        runner._measure_diagnostic(7.3, 0.15, 0.25, tip, tip, metrics)
+        assert metrics.recovery_status == "未在规定恢复窗口内达标"
+        assert runner._diagnostic_done
+    finally: runner.close()
+
+
+def test_recovery_requires_continuous_window_and_each_release_resets_result(tmp_path):
+    from multi_drone_mujoco.backends.px4_runner import Px4RunMetrics
+    from multi_drone_mujoco.backends.interaction import InteractionCommand, InteractionMode, InteractionFrame
+    runner = _diagnostic_runner(tmp_path)
+    metrics = Px4RunMetrics(last_interaction_release_s=2.3)
+    try:
+        candidate = None
+        for t in (2.4, 2.7, 3.0):
+            candidate = runner._update_recovery(t, 0.05, 0.05, candidate, metrics)
+        assert metrics.interaction_recovery_time_s is None
+        candidate = runner._update_recovery(3.1, 0.11, 0.05, candidate, metrics)
+        assert candidate is None
+        candidate = runner._update_recovery(3.2, 0.05, 0.05, candidate, metrics)
+        candidate = runner._update_recovery(4.2, 0.05, 0.05, candidate, metrics)
+        assert metrics.interaction_recovery_time_s == pytest.approx(0.9)
+        command = InteractionCommand(timestamp_us=5000000, sequence=1, mode=InteractionMode.DISABLED,
+            target_body=None, target_site=None, frame=InteractionFrame.WORLD_ENU, source="test", released=True)
+        runner._record_interaction_command(command, 5.0, metrics)
+        assert metrics.interaction_recovery_time_s is None
+        assert metrics.last_interaction_release_s == 5.0
+        # Run loop resets the candidate on this release, preventing old reuse.
+        candidate = runner._update_recovery(5.1, 0.05, 0.05, None, metrics)
+        assert metrics.interaction_recovery_time_s is None
+        runner._update_recovery(6.1, 0.05, 0.05, candidate, metrics)
+        assert metrics.interaction_recovery_time_s == pytest.approx(0.1)
+    finally: runner.close()
+
+
+def test_ordinary_gui_does_not_accumulate_detailed_interaction_events(tmp_path):
+    from multi_drone_mujoco.backends.px4_runner import Px4RunMetrics
+    from multi_drone_mujoco.backends.interaction import InteractionCommand, InteractionMode, InteractionFrame
+    runner = Px4MujocoRunner.create_default(Px4RunnerConfig(mode="remote", bind_host="127.0.0.1", bind_port=4560,
+        gui=True, plant="active_arm", log_dir=tmp_path))
+    try:
+        metrics = Px4RunMetrics()
+        for i in range(10000):
+            cmd = InteractionCommand(timestamp_us=i+1, sequence=i+1, mode=InteractionMode.EXTERNAL_FORCE,
+                target_body="drone0", target_site=None, frame=InteractionFrame.WORLD_ENU, force_n=(0.001*(i%2), 0, 0), source="test", active=True)
+            runner._record_interaction_command(cmd, i/1200, metrics)
+        assert len(runner._interaction_events) == 0
+    finally: runner.close()
+
+
+def test_legacy_gui_close_past_300_lands_without_closed_viewer(tmp_path, monkeypatch):
+    from multi_drone_mujoco.backends.px4_control import Px4FlightControlConfig, Px4MavlinkFlightControl
+    aviary = FakeAviary()
+    native = SimpleNamespace(is_running=lambda: len(aviary.actions) < 602,
+                             sync=lambda: None, close=lambda: None)
+    aviary.render = lambda: setattr(aviary, "_viewer", native)
+    config = Px4RunnerConfig(mode="local", bind_host="127.0.0.1", bind_port=4560,
+        gui=True, duration_s=None, sim_freq_hz=2, control_freq_hz=2, auto_flight=True,
+        launch_owned_px4=True, autopilot_dir=Path("/home/ustc/PX4-Autopilot"), simulator_host="127.0.0.1",
+        gcs_bind_host="127.0.0.1", gcs_bind_port=14550, log_dir=tmp_path)
+    packets = [NormalizedMotorCommand((0.2,)*4, True, 1000000+i*500000, i+1) for i in range(604)]
+    control = Px4MavlinkFlightControl(Px4FlightControlConfig("127.0.0.1", 14550))
+    monkeypatch.setattr(control, "open", lambda: None)
+    monkeypatch.setattr(control, "poll", lambda: None)
+    monkeypatch.setattr(control, "send_position_setpoint_enu", lambda *a: None)
+    runner = Px4MujocoRunner(config, aviary, make_backend(FakeTransport(packets)), MujocoTruthSource(), flight_control=control)
+    monkeypatch.setattr(runner, "_prepare_auto_flight", lambda *a: None)
+    landed = []
+    def land(*a):
+        assert aviary._viewer is None
+        landed.append(True)
+        runner._final_actuator_armed = False
+        return 1
+    monkeypatch.setattr(runner, "_land_and_disarm", land)
+    metrics = runner.run()
+    assert metrics.outcome == "completed" and metrics.simulation_duration_s == 301
+    assert metrics.landed and landed == [True]
+    assert not np.any(aviary.command)
+
+
+def test_pause_resume_keeps_clock_cadence_and_zeroes_until_fresh_output(tmp_path, monkeypatch):
+    config = Px4RunnerConfig(mode="remote", bind_host="127.0.0.1", bind_port=4560,
+        plant="active_arm", gui=True, duration_s=0.01, log_dir=tmp_path,
+        bootstrap_wall_interval_s=0)
+    runner = Px4MujocoRunner.create_default(config)
+    transport = FakeTransport([
+        NormalizedMotorCommand((0,)*4, False, 1000000, 1),
+        NormalizedMotorCommand((0.2,)*4, True, 1005000, 2),
+        NormalizedMotorCommand((0.2,)*4, True, 1005000, 2), # stale pre-pause packet
+        NormalizedMotorCommand((0.4,)*4, True, 1010000, 3)])
+    runner.backend.transport = runner.backend.coordinator.transport = transport
+    paused = []
+    class Viewer:
+        exit_requested = False
+        permission = True
+        def poll(self, t):
+            if t > 1/1200 and not paused:
+                self.permission = False
+                paused.append(t)
+            else: self.permission = True
+            return runner._sample_interaction(t, Px4RunMetrics())
+        def consume_advance_permission(self): return self.permission
+        def after_step(self): pass
+        def render_only(self): pass
+        def close(self): pass
+    from multi_drone_mujoco.backends.px4_runner import Px4RunMetrics
+    monkeypatch.setattr(runner, "_open_interactive_viewer", lambda: setattr(runner, "_interaction_viewer", Viewer()))
+    monkeypatch.setattr("multi_drone_mujoco.backends.px4_runner.time.sleep", lambda _: None)
+    original = runner.aviary.step
+    commands = []
+    def step():
+        original()
+        commands.append(runner.aviary.data.ctrl[runner.aviary.ROTOR_CONTROL_ADDRESSES[0]].copy())
+    runner.aviary.step = step
+    metrics = runner.run()
+    assert metrics.outcome == "completed" and len(commands) == 12
+    assert np.all(commands[0] > 0)
+    for command in commands[1:6]: np.testing.assert_array_equal(command, 0)
+    assert np.all(commands[6] > commands[0])
+    assert [f.timestamp_us for f in transport.sent_sensor_frames] == [1000000, 1005000, 1010000]
+    assert [f.sequence for f in transport.sent_sensor_frames] == [0, 1, 2]
+    assert not np.any(runner.aviary.data.ctrl[runner.aviary.ROTOR_CONTROL_ADDRESSES[0]])
+
+
+def test_diagnostic_cleanup_returns_owned_tendon_group_to_zero(tmp_path):
+    runner = _diagnostic_runner(tmp_path)
+    runner.aviary.set_scaled_stablesoft_tension_command((0.001, 0, 0, 0))
+    runner.close()
+    assert [runner.aviary.data.ctrl[b.control_address] for b in runner.aviary.SCALED_STABLESOFT_TENDON_BINDINGS] == [0]*4
+
+
+def test_nan_measurement_cannot_start_recovery_window(tmp_path):
+    from multi_drone_mujoco.backends.px4_runner import Px4RunMetrics
+    runner = _diagnostic_runner(tmp_path)
+    try:
+        metrics = Px4RunMetrics(last_interaction_release_s=2.3)
+        assert runner._update_recovery(3.0, float("nan"), 0, None, metrics) is None
+        assert metrics.interaction_recovery_time_s is None
+    finally: runner.close()

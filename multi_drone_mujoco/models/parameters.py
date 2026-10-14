@@ -1,5 +1,8 @@
 """Physical parameters shared by model construction and simulation."""
 
+from dataclasses import dataclass
+import math
+
 from multi_drone_mujoco.utils.enums import DroneModel
 
 
@@ -15,8 +18,8 @@ DRONE_PARAMS = {
         "ixx": 1.4e-5,                          # kg*m^2
         "iyy": 1.4e-5,
         "izz": 2.17e-5,
-        "kf": 3.16e-10,                         # thrust coeff (N/(rad/s)^2)
-        "km": 7.94e-12,                         # torque coeff (Nm/(rad/s)^2)
+        "kf": 3.16e-10,                         # thrust coeff (N/RPM^2)
+        "km": 7.94e-12,                         # torque coeff (Nm/RPM^2)
         "prop_radius": 0.02325,                 # m
         "max_speed_kmh": 30.0,
         "gnd_eff_coeff": 11.36859,
@@ -80,3 +83,33 @@ CF2X_3G_PAYLOAD_PARAMS = {
     "radius": 0.010,        # m
     "half_height": 0.005,   # m (MuJoCo cylinder size convention)
 }
+
+
+@dataclass(frozen=True)
+class ResolvedUavParameters:
+    """Immutable per-run physical snapshot; coefficients use numerical RPM."""
+
+    values: tuple
+
+    def __getitem__(self, name):
+        return dict(self.values)[name]
+
+    @classmethod
+    def resolve(cls, drone_model=DroneModel.CF2X, overrides=None):
+        values = dict(DRONE_PARAMS[drone_model])
+        unknown = set(overrides or {}) - values.keys()
+        if unknown:
+            raise ValueError(f"unknown UAV parameters: {sorted(unknown)}")
+        values.update(overrides or {})
+        for name, value in values.items():
+            if isinstance(value, bool) or not math.isfinite(float(value)):
+                raise ValueError(f"UAV {name} must be finite")
+            values[name] = float(value)
+        for name in ("mass", "ixx", "iyy", "izz", "arm_length", "kf", "km",
+                     "thrust2weight_ratio", "prop_radius", "collision_h", "collision_r"):
+            if values[name] <= 0:
+                raise ValueError(f"UAV {name} must be positive")
+        inertia = [values[name] for name in ("ixx", "iyy", "izz")]
+        if 2 * max(inertia) > sum(inertia):
+            raise ValueError("UAV inertia must satisfy the triangle inequality")
+        return cls(tuple(values.items()))

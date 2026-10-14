@@ -1,0 +1,75 @@
+# One daily configuration. CLI overrides only explicitly supplied options.
+# YAML paths are relative to this file; coefficients use numerical RPM.
+robot:
+  uav:
+    mass_kg: 0.027
+    ixx_kg_m2: 1.4e-5
+    iyy_kg_m2: 1.4e-5
+    izz_kg_m2: 2.17e-5
+    arm_length_m: 0.0397
+    kf_n_per_rpm2: 3.16e-10
+    km_nm_per_rpm2: 7.94e-12
+    thrust2weight_ratio: 2.25
+    prop_radius_m: 0.02325
+    collision_height_m: 0.03
+    collision_radius_m: 0.06
+    collision_z_offset_m: 0.0
+  soft_arm:
+    segment_count: 9
+    total_length_m: 0.08
+    total_mass_kg: 0.003
+    body_radius_m: 0.003
+    joint_stiffness_nm_per_rad: 0.003086
+    joint_damping_nm_s_per_rad: null
+    target_damping_ratio: 0.3
+    tendon_frictionloss_n: 0.0
+    # Other limits are outside the verified controller calibration.
+    max_tension_n: 0.01
+    visual_mode: mesh
+
+simulation:
+  uav_source: manual
+  arm_source: manual
+  initial_position_enu_m: [0, 0, 1]
+  target_position_enu_m: [0, 0, 1]
+  arm_acceleration_m_s2: [0, 0]
+  gui: true
+  # null means viewer-driven termination; finite duration remains supported.
+  duration_s: null
+  headless_duration_s: 5.0
+  sim_freq_hz: 2400
+  control_freq_hz: 200
+  plant_step_freq_hz: 1200
+  export_xml: null
+  log_dir: ../results/sim
+
+px4:
+  # Automatic flight is allowed only for this owned local SITL profile.
+  # External peers require launch_owned_px4=false AND auto_flight=false.
+  mode: local
+  bind_host: 127.0.0.1
+  bind_port: 4560
+  launch_owned_px4: true
+  autopilot_dir: /home/ustc/PX4-Autopilot
+  simulator_host: 127.0.0.1
+  parameter_file: px4/cf2x_scaled_stablesoft_passive.params
+  gcs_bind_host: 127.0.0.1
+  gcs_bind_port: 14550
+  auto_flight: true
+  # Advanced lifecycle settings use existing Px4RunnerConfig defaults.
+  motor_time_constant_s: 0.0
+
+diagnostics:
+  # null: ordinary operation; baseline or pulse: explicit headless SITL test.
+  trial: null
+  sample_hz: 20
+  max_samples: 256
+  # Provisional frozen criteria, not established performance requirements.
+  baseline_s: 2.0
+  stable_window_s: 1.0
+  position_threshold_m: 0.10
+  speed_threshold_m_s: 0.10
+  pulse_tendon_index: 0
+  pulse_tension_n: 0.001
+  pulse_duration_s: 0.30
+  recovery_s: 5.0
